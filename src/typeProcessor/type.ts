@@ -5,6 +5,7 @@ import { canFuncBeMethod, getNamespaceMemberType } from "../compiler/namespace/u
 // NOTE: this gets populated after this file is done running,
 // when creating types in this file you cannot rely on this being filled out.
 export const TYPE_NAMESPACES: {[typeName: string]: Namespace} = {};
+export const CUSTOM_TYPES: {[typeName: string]: Type} = {};
 
 export type FuncTypeData = {
     definition: FunctionDefinition;
@@ -39,7 +40,11 @@ export type MultiValueTypeData = {
     overflowType: Type,
 }
 
-export type TypeExtraData = FuncTypeData | NamespaceTypeData | ListTypeData | DictTypeData | MultiValueTypeData | VarTypeData | null;
+export type AliasTypeData = {
+    baseType: Type,
+}
+
+export type TypeExtraData = FuncTypeData | NamespaceTypeData | ListTypeData | DictTypeData | MultiValueTypeData | VarTypeData | AliasTypeData | null;
 
 export type TypeConstructor<F extends ((...args: any[]) => Type)> = F & {
     constructsType: string
@@ -273,6 +278,44 @@ export class Type {
         }
     );
 
+    public static alias(name: string, baseType: Type): Type {
+        let getMemberType = (m?: string | number) => baseType.getMemberType(m);
+        let getMembers = () => baseType.getMembers();
+        let getProperties = () => {
+            let props = new Set<string>();
+            for (const prop of baseType.getProperties() ?? []) props.add(prop);
+            for (const prop of Object.keys(TYPE_NAMESPACES[name]?.members ?? {})) props.add(prop);
+            return [...props];
+        }
+        let getPropertyType = (p: string) => {
+            let namespace = TYPE_NAMESPACES[name];
+            if (namespace && p in namespace.members) return getNamespaceMemberType(namespace, p);
+            return baseType.getPropertyType(p);
+        }
+        let getPropertyDefinition = (p: string) => {
+            let namespace = TYPE_NAMESPACES[name];
+            if (namespace && p in namespace.members) return namespace.members[p];
+            return baseType.getPropertyDefinition(p);
+        }
+        let strictMatchCallback = (other: Type) => other.name == name;
+        let assignabilityCallback = (to: Type) => {
+            if (to.matches(Type.var)) to = (to.data as VarTypeData).varType;
+            if (to.matches(Type.any) || to.name == name) return true;
+            return baseType.isAssignableTo(to);
+        }
+        return new Type(name, {
+            getMemberType,
+            getMembers,
+            getProperties,
+            getPropertyType,
+            getPropertyDefinition,
+            strictMatchCallback,
+            assignabilityCallback,
+            stringify: () => name,
+            data: {baseType},
+        });
+    }
+
     public readonly assignable: boolean;
     public readonly getMemberType = (m?: string | number) => Type.unknown;
     /** Returns a `string[]` containing all member names, or `null` if this type does not allow property access */
@@ -339,6 +382,13 @@ export class Type {
     }
     [Symbol.toPrimitive] = this.toString;
 
+    getRuntimeType(): Type {
+        if (this.data && "baseType" in this.data) {
+            return this.data.baseType.getRuntimeType();
+        }
+        return this;
+    }
+
     /** Only compares type names, does not compare contents/generic subtypes */
     matches = (other: Type | TypeConstructor<(...args: any[]) => Type>) => {
         return this.name == ((other as any).constructsType ?? other.name);
@@ -354,6 +404,9 @@ export class Type {
     isAssignableTo = (to: Type) => {
         if (to.matches(Type.var)) to = (to.data as VarTypeData).varType;
         if (to.matches(Type.any)) return true;
+        if (to.data && "baseType" in to.data) {
+            return this.isAssignableTo(to.data.baseType);
+        }
         return this.strictlyMatches(to);
     }
 }

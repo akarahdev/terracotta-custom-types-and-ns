@@ -7,6 +7,7 @@ import { Namespace } from "./namespace.ts";
 export function canFuncBeMethod(func: FunctionDefinition, type: Type): boolean {
     for (let sig of func.signatures) {
         let firstParam = sig.params[0];
+        if (!firstParam) return false;
         // TODO: handle functions that take in a var of Type
         if (!type.isAssignableTo(firstParam.type)) {
             return false;

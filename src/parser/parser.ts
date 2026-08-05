@@ -1,6 +1,6 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
 import { BinaryExpression, Expression, AtomicExpression, GroupExpression, MissingExpression, ListExpression, CallExpression, AccessExpression, ChunkExpression, VariableExpression, CallOrStartExpression, TypeExpression, TypeAssignmentExpression, ParameterExpression, MultiTypeAssignmentExpression, DictionaryEntryExpression, DictionaryExpression, UnaryPrefixExpression, BracketedAccessExpression, TypecastExpression, DictionaryTypeExpression, DictionaryTypeEntryExpression, PerSelectedExpression, SelectionExpression } from "../ast/expression.ts";
-import { EventStatement, ExpressionStatement, RepeatStatement, ReturnStatement, SingleKeywordStatement, Statement, FunctionStatement, IfStatement, WhileStatement, ForStatement, DoStatement, AssignmentStatement, PerSelectedStatement, DeclareStatement } from "../ast/statement.ts";
+import { EventStatement, ExpressionStatement, RepeatStatement, ReturnStatement, SingleKeywordStatement, Statement, FunctionStatement, IfStatement, WhileStatement, ForStatement, DoStatement, AssignmentStatement, PerSelectedStatement, DeclareStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
 import { Token, TokenType, BindingPower } from "../ast/token.ts";
 import { ErrorPositionMode, ErrorType, TCError, TCNodeError } from "../error/error.ts";
 import { dirWithoutRelations } from "../util/debug.ts";
@@ -124,6 +124,8 @@ export class Parser {
             [TokenType.FUNCTION,            this.parseFunctionStatement],
             [TokenType.PROCESS,             this.parseFunctionStatement],
             [TokenType.DECLARE,             this.parseDeclareStatement],
+            [TokenType.TYPE,                this.parseTypeStatement],
+            [TokenType.EXTEND,              this.parseExtendStatement],
 
             [TokenType.FOR,                 this.parseForStatement],
             [TokenType.REPEAT,              this.parseRepeatStatement],
@@ -707,6 +709,25 @@ export class Parser {
         let subStatement = this.parseExpressionStatement();
         this.expect(TokenType.SEMICOLON);
         return new DeclareStatement(keyword, subStatement);
+    }
+
+    parseTypeStatement = (): TypeStatement => {
+        let keyword = this.consume();
+        let [name, nameFound] = this.expectOrMissing(TokenType.IDENTIFIER, true);
+        let assignedType = this.parseTypeAssignmentExpression() ?? new TypeAssignmentExpression(
+            Token.missing(this.currentToken().startPos),
+            new TypeExpression(Token.missing(this.currentToken().startPos), null),
+        );
+        this.expect(TokenType.SEMICOLON);
+        return new TypeStatement(keyword, name, assignedType);
+    }
+
+    parseExtendStatement = (): ExtendStatement => {
+        let keyword = this.consume();
+        let type = this.parseTypeExpression() ?? new TypeExpression(Token.missing(this.currentToken().startPos), null);
+        let [_, openCurlyFound] = this.expect(TokenType.OPEN_CURLY, false);
+        let chunk = openCurlyFound ? this.parseChunkExpression(TokenType.OPEN_CURLY, TokenType.CLOSE_CURLY)! : new MissingExpression(this.currentToken().startPos);
+        return new ExtendStatement(keyword, type, chunk);
     }
 
     parseExpressionStatement = (): ExpressionStatement | AssignmentStatement => {

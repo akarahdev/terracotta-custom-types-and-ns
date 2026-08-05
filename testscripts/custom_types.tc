@@ -1,0 +1,25 @@
+extend vec {
+    function abs(this: vec): vec {
+        return vec(num.abs(this.x), num.abs(this.y), num.abs(this.z));
+    }
+}
+
+type myCustomVec: vec;
+
+extend myCustomVec {
+    function flip(this: myCustomVec): myCustomVec {
+        return vec(-this.x, -this.y, -this.z);
+    }
+}
+
+function abs(value: num): num {
+    return num.abs(value);
+}
+
+playerevent join {
+    line vector: vec = vec(1, -1, 1);
+    line custom: myCustomVec = vec(1, 2, 3);
+    default.sendMessage(vector.abs() as str);
+    default.sendMessage(custom.flip() as str);
+    default.sendMessage(abs(-1) as str);
+}

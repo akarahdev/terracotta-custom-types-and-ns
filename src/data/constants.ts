@@ -76,7 +76,7 @@ export const INVERTIBLE_SELECT_ACTIONS = ["PlayerName","EntityName","PlayersCond
 // strings in here will cause variables with that name to throw an error about shadowing
 // strings in here will also show up as keyword autocomplete items
 export const KEYWORDS = [
-    "lscancel", "playerevent", "entityevent", "gameevent", "function", "process", "declare",
+    "lscancel", "playerevent", "entityevent", "gameevent", "function", "process", "declare", "type", "extend",
     "call", "start",
     "return", "break", "continue",
     "global", "saved", "local", "line",

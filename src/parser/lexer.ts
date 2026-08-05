@@ -192,6 +192,8 @@ export class Lexer {
             this.makeKeywordPattern(TokenType.FUNCTION,         "function"),
             this.makeKeywordPattern(TokenType.PROCESS,          "process"),
             this.makeKeywordPattern(TokenType.DECLARE,          "declare"),
+            this.makeKeywordPattern(TokenType.TYPE,             "type"),
+            this.makeKeywordPattern(TokenType.EXTEND,           "extend"),
             
             this.makeKeywordPattern(TokenType.CALL,             "call"),
             this.makeKeywordPattern(TokenType.START,            "start"),

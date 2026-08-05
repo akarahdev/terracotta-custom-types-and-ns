@@ -86,6 +86,7 @@ export class EventStatement extends Statement {
 /** Also used for processes */
 export class FunctionStatement extends Statement {
     override headerType: HeaderType;
+    public backendName: string | null = null;
 
     constructor(
         public keyword: Token,
@@ -97,6 +98,22 @@ export class FunctionStatement extends Statement {
         super(keyword.startPos, chunk.endPos);
         this.headerType = keyword.type == TokenType.FUNCTION ? DFCodeblockName.FUNCTION : DFCodeblockName.PROCESS;
     }
+}
+
+export class TypeStatement extends Statement {
+    constructor(
+        public keyword: Token,
+        public name: Token,
+        public assignedType: TypeAssignmentExpression,
+    ) {super(keyword.startPos, assignedType.endPos);}
+}
+
+export class ExtendStatement extends Statement {
+    constructor(
+        public keyword: Token,
+        public type: TypeExpression,
+        public chunk: ChunkExpression | MissingExpression,
+    ) {super(keyword.startPos, chunk.endPos);}
 }
 
 export class RepeatStatement extends Statement {

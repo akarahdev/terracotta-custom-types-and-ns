@@ -2,7 +2,7 @@ import * as util from "node:util";
 import { Token, TokenType } from "../ast/token.ts";
 import { VariableScope } from "../typeProcessor/typeProcessor.ts";
 import { DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, SingleKeywordStatement, Statement, WhileStatement } from "../ast/statement.ts";
-import { AccessExpression, AtomicExpression, BinaryExpression, BracketedAccessExpression, CallExpression, CallOrStartExpression, ChunkExpression, DictionaryEntryExpression, DictionaryExpression, Expression, GroupExpression, ListExpression, MissingExpression, MultiTypeAssignmentExpression, ParameterExpression, SelectionExpression, TypeAssignmentExpression, TypecastExpression, TypeExpression, UnaryPrefixExpression, VariableExpression } from "../ast/expression.ts";
+import { AccessExpression, AtomicExpression, BinaryExpression, BracketedAccessExpression, CallExpression, CallOrStartExpression, ChunkExpression, DictionaryEntryExpression, DictionaryExpression, DictionaryTypeExpression, Expression, GroupExpression, ListExpression, MissingExpression, MultiTypeAssignmentExpression, ParameterExpression, SelectionExpression, TypeAssignmentExpression, TypecastExpression, TypeExpression, UnaryPrefixExpression, VariableExpression } from "../ast/expression.ts";
 import { ASTNode } from "../ast/astNode.ts";
 
 //=--------------------------------------=\\
@@ -137,8 +137,12 @@ function recurse(e: ASTNode | null): string {
     } else if (e instanceof TypeExpression) {
         if (e.type instanceof Token) {
             return `${C.BLU}${e.type.value}${C.CLR}${e.subType ? `[${e.subType.elements.map(e=>recurse(e)).join(", ")}]` : ""}${e.ellipses ? "..." : ""}`
+        } else if (e.type instanceof ListExpression) {
+            return `[${e.type.elements.map(e=>recurse(e)).join(", ")}]${e.ellipses ? "..." : ""}`;
+        } else if (e.type instanceof DictionaryTypeExpression) {
+            return `{${[...e.type.entries, ...e.type.overflowTypes].map(e=>recurse(e)).join(", ")}}${e.ellipses ? "..." : ""}`;
         } else {
-            return `${e.type ? `[${e.type.elements.map(e=>recurse(e)).join(", ")}]` : ""}${e.ellipses ? "..." : ""}`;
+            return `${e.ellipses ? "..." : ""}`;
         }
     } else if (e instanceof TypeAssignmentExpression) {
         return `: ${recurse(e.type)}`;
@@ -208,7 +212,7 @@ function recurse(e: ASTNode | null): string {
     } else if (e instanceof SelectionExpression) {
         return `${C.RED}${C.B}${e.keyword.value}${C.CLR} ${recurse(e.name)}${e.inverterToken ? "!" : ""};`;
     } else if (e instanceof SingleKeywordStatement) {
-        return `${C.RED}${C.B}${e.keyword.value}${C.CLR}${e.args ? recurse(e.args) : ""};`
+        return `${C.RED}${C.B}${e.keyword.value}${C.CLR};`
     } else if (e instanceof ReturnStatement) {
         return `${C.RED}${C.B}${e.keyword.value}${C.CLR}${e.values.length > 0 ? " "+e.values.map(v => recurse(v)).join(", ") : ""};`
     }

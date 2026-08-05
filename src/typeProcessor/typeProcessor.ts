@@ -1,10 +1,10 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
 import { AccessExpression, AtomicExpression, BinaryExpression, BracketedAccessExpression, CallExpression, ChunkExpression, DictionaryEntryExpression, DictionaryExpression, DictionaryTypeExpression, Expression, GroupExpression, ListExpression, SelectionExpression, TypecastExpression, TypeExpression, UnaryPrefixExpression, VariableExpression } from "../ast/expression.ts";
-import { AssignmentStatement, ExpressionStatement, ForStatement, FunctionStatement, RepeatStatement, PerSelectedStatement, Statement, IfStatement, WhileStatement, DeclareStatement } from "../ast/statement.ts";
+import { AssignmentStatement, ExpressionStatement, ForStatement, FunctionStatement, RepeatStatement, PerSelectedStatement, Statement, IfStatement, WhileStatement, DeclareStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
 import { Token, TokenType } from "../ast/token.ts";
 import { ErrorType, TCError, TCNodeError } from "../error/error.ts";
 import { Operations } from "../compiler/operations.ts";
-import { DictTypeData, FuncTypeData, ListTypeData, MultiValueTypeData, NamespaceTypeData, Type, TypeConstructor, VarTypeData } from "./type.ts";
+import { CUSTOM_TYPES, DictTypeData, FuncTypeData, ListTypeData, MultiValueTypeData, NamespaceTypeData, Type, TypeConstructor, TYPE_NAMESPACES, VarTypeData } from "./type.ts";
 import { Namespace } from "../compiler/namespace/namespace.ts";
 import { getTagsAndArgTypes, ps, tcParseNumber } from "../util/utils.ts";
 import { FILTER_ACTIONS, REPEAT_ACTIONS, SELECT_ACTIONS } from "../compiler/namespace/builtins.ts";
@@ -16,6 +16,11 @@ import { DFCodeblockName } from "../df/constants.ts";
 import { BooleanOperation } from "../compiler/booleanOperation.ts";
 import { actions } from "../df/actiondump.ts";
 import { commentsToDocumentation } from "../ast/documenter.ts";
+
+export function getExtensionFunctionBackendName(typeName: string, functionName: string): string {
+    let clean = (value: string) => value.replace(/[^A-Za-z0-9_]/g, "_");
+    return `__TC_EXT_${clean(typeName)}_${clean(functionName)}`;
+}
 
 export enum VariableScope {
     SAVED,
@@ -288,6 +293,15 @@ export class TypeProcessor {
 
     expressionTypeCache: Map<Expression, Map<EnvironmentFrame, Type>> = new Map();
 
+    constructor() {
+        for (const name of Object.keys(CUSTOM_TYPES)) {
+            delete CUSTOM_TYPES[name];
+            delete TYPE_NAMESPACES[name];
+            delete Namespace.registry[name];
+            Type.assignableTypes.delete(name);
+        }
+    }
+
     reportError(node: ASTNode, error: string) {
        this.errors.push(new TCNodeError(
             node,
@@ -457,73 +471,76 @@ export class TypeProcessor {
     }
 
     applyStatementVariables(statement: Statement, frame: EnvironmentFrame) { 
+        if (statement instanceof TypeStatement) {
+            if (!(frame.astNode instanceof RootNode)) {
+                this.reportError(statement.keyword, `Type declarations can only appear at the top level of a file`);
+                return;
+            }
+            let name = statement.name.value;
+            if (name in Type || name in CUSTOM_TYPES || name in Namespace.registry) {
+                this.reportError(statement.name, `Type '${name}' is already defined`);
+                return;
+            }
+            let baseType = this.evaluateExplicitType(statement.assignedType.type, {reportErrors: true});
+            if (baseType.matches(Type.unknown) || baseType.matches(Type.void) || baseType.matches(Type.var) || baseType.matches(Type.func) || baseType.matches(Type.namespace)) {
+                this.reportError(statement.assignedType.type, `Type '${baseType}' cannot be used as a custom type base`);
+                return;
+            }
+            let customType = Type.alias(name, baseType);
+            CUSTOM_TYPES[name] = customType;
+            Type.assignableTypes.add(name);
+            TYPE_NAMESPACES[name] = new Namespace(name);
+            return;
+        }
+        else if (statement instanceof ExtendStatement) {
+            let targetType = this.evaluateExplicitType(statement.type, {reportErrors: true});
+            if (targetType.matches(Type.unknown) || targetType.matches(Type.void) || targetType.matches(Type.var) || targetType.matches(Type.func) || targetType.matches(Type.namespace)) {
+                this.reportError(statement.type, `Type '${targetType}' cannot be extended`);
+                return;
+            }
+            let namespace = TYPE_NAMESPACES[targetType.name] ?? new Namespace(targetType.name);
+            TYPE_NAMESPACES[targetType.name] = namespace;
+
+            if (!(statement.chunk instanceof ChunkExpression)) return;
+            for (const inner of statement.chunk.statements) {
+                if (!(inner instanceof FunctionStatement)) {
+                    this.reportError(inner, `Only function declarations are allowed inside extend blocks`);
+                    continue;
+                }
+
+                let isConstructor = inner.name.value == "constructor";
+                let backendName = getExtensionFunctionBackendName(targetType.name, inner.name.value);
+                inner.backendName = backendName;
+                let definition = this.createFunctionDefinition(inner, frame, backendName, {registerParameters: false});
+                if (!definition) continue;
+
+                if (isConstructor) {
+                    if (namespace.nameFunction) {
+                        this.reportError(inner.name, `Type '${targetType.name}' already has a constructor defined`);
+                        continue;
+                    }
+                    if (!definition.defaultReturnType.matches(targetType)) {
+                        this.reportError(
+                            inner.returnType ?? inner.name,
+                            `Constructors must declare a return type of '${targetType.name}' (e.g. 'constructor(...): ${targetType.name}')`
+                        );
+                        continue;
+                    }
+                    namespace.nameFunction = definition;
+                } else {
+                    namespace.members[inner.name.value] = definition;
+                }
+            }
+            return;
+        }
         // function/process parameters
         if (statement instanceof FunctionStatement) {
-            let signatureParams: ParameterSignatureEntry[] = [];
-
-            if (statement.params) {
-                let seenNames: Set<string> = new Set();
-                for (const param of statement.params.elements) {
-                    if (seenNames.has(param.name.value)) continue;
-                    seenNames.add(param.name.value);
-    
-                    let type: Type;
-                    let varType: Type;
-                    if (param.assignedType) {
-                        type = this.evaluateExplicitType(param.assignedType.type, {reportErrors: true, allowVarType: true});
-                        if (param.ellipses) {
-                            varType = Type.list(type);
-                        } else if (type.matches(Type.var)) {
-                            varType = (type.data as VarTypeData).varType;
-                        } else {
-                            varType = type;
-                        }
-                    } else {
-                        type = Type.any;
-                        varType = Type.any;
-                    }
-                    let description = commentsToDocumentation(param.attachedComments);
-                    frame.registerVariable({
-                        id: VariableId.get(VariableScope.LINE,param.name.value),
-                        type: varType,
-                        effectiveBeyondPosition: statement.chunk.startPos,
-                        astNode: param,
-                        description,
-                    })
-                    signatureParams.push({
-                        name: param.name.value, 
-                        type: type,
-                        optional: param.optionalMarker != null || (param.ellipses == null && param.defaultValue != null), 
-                        plural: param.ellipses != null,
-                        description,
-                    })
-                }
-            }
-
-            let returnType: Type = Type.void;
-            if (statement.returnType != null) {
-                if (statement.returnType.types.length == 1) {
-                    returnType = this.evaluateExplicitType(statement.returnType.types[0], {reportErrors: true});
-                } else {
-                    returnType = Type.multivalue(statement.returnType.types.map(t => this.evaluateExplicitType(t, {reportErrors: true})), Type.void);
-                }
-            }
-
-            // frame here will be the function's chunk's frame so the parent needs to be accessed 
-            if (frame.parent?.astNode instanceof RootNode) {
+            let backendName = statement.backendName ?? statement.name.value;
+            let definition = this.createFunctionDefinition(statement, frame, backendName);
+            if (definition && frame.parent?.astNode instanceof RootNode) {
                 let isProcess = statement.headerType == DFCodeblockName.PROCESS;
                 let map = this.globalFrame[isProcess ? "processes" : "functions"];
-                map.getOrInsert(statement.name.value, []).push({
-                    definitionType: DefinitionType.FUNCTION,
-                    action: isProcess ? actions.get(DFCodeblockName.START_PROCESS)?.dynamic : actions.get(DFCodeblockName.CALL_FUNCTION)?.dynamic,
-                    name: statement.name.value,
-                    description: commentsToDocumentation(statement.attachedComments),
-                    signatures: [{params: signatureParams}],
-                    defaultReturnType: returnType,
-                    getReturnType: USE_DEFAULT_RETURN_TYPE,
-                    compile: isProcess ? COMPILE_START_PROCESS : COMPILE_CALL_FUNCTION,
-                    astNode: statement,
-                })
+                map.getOrInsert(statement.name.value, []).push(definition)
             }
         }
         // repeat counter var
@@ -558,7 +575,6 @@ export class TypeProcessor {
             else {
                 requirements = this.getRequirements(statement.iteratorExpression, frame);
             }
-
             for (let i = 0; i < varExprs.length; i++) {
                 let varExpr = varExprs[i];
                 let varId: VariableId | undefined;
@@ -571,11 +587,11 @@ export class TypeProcessor {
                 if (!varId) continue;
 
                 frame.registerVariable({
-                    id: varId, 
-                    type: varTypes[i] ?? null, 
-                    effectiveBeyondPosition: statement.chunk.startPos, 
-                    requirements, 
-                    valueExpression: statement.iteratorExpression, 
+                    id: varId,
+                    type: varTypes[i] ?? null,
+                    effectiveBeyondPosition: statement.chunk.startPos,
+                    requirements,
+                    valueExpression: statement.iteratorExpression,
                     forLoopVarPos: i,
                     astNode: varExpr,
                 });
@@ -589,16 +605,106 @@ export class TypeProcessor {
         }
     }
 
+    createFunctionDefinition(statement: FunctionStatement, frame: EnvironmentFrame, backendName: string, {registerParameters = true}: {registerParameters?: boolean} = {}): FunctionDefinition | null {
+            let signatureParams: ParameterSignatureEntry[] = [];
+
+            if (statement.params) {
+                let seenNames: Set<string> = new Set();
+                for (const param of statement.params.elements) {
+                    if (seenNames.has(param.name.value)) continue;
+                    seenNames.add(param.name.value);
+    
+                    let type: Type;
+                    let varType: Type;
+                    if (param.assignedType) {
+                        type = this.evaluateExplicitType(param.assignedType.type, {reportErrors: true, allowVarType: true});
+                        if (param.ellipses) {
+                            varType = Type.list(type);
+                        } else if (type.matches(Type.var)) {
+                            varType = (type.data as VarTypeData).varType;
+                        } else {
+                            varType = type;
+                        }
+                    } else {
+                        type = Type.any;
+                        varType = Type.any;
+                    }
+                    let description = commentsToDocumentation(param.attachedComments);
+                    if (registerParameters) {
+                        frame.registerVariable({
+                            id: VariableId.get(VariableScope.LINE,param.name.value),
+                            type: varType,
+                            effectiveBeyondPosition: statement.chunk.startPos,
+                            astNode: param,
+                            description,
+                        })
+                    }
+                    signatureParams.push({
+                        name: param.name.value, 
+                        type: type,
+                        optional: param.optionalMarker != null || (param.ellipses == null && param.defaultValue != null), 
+                        plural: param.ellipses != null,
+                        description,
+                    })
+                }
+            }
+
+            let returnType: Type = Type.void;
+            if (statement.returnType != null) {
+                if (statement.returnType.types.length == 1) {
+                    returnType = this.evaluateExplicitType(statement.returnType.types[0], {reportErrors: true});
+                } else {
+                    returnType = Type.multivalue(statement.returnType.types.map(t => this.evaluateExplicitType(t, {reportErrors: true})), Type.void);
+                }
+            }
+
+            // frame here will be the function's chunk's frame so the parent needs to be accessed 
+            let isProcess = statement.headerType == DFCodeblockName.PROCESS;
+            return {
+                definitionType: DefinitionType.FUNCTION,
+                action: isProcess ? actions.get(DFCodeblockName.START_PROCESS)?.dynamic : actions.get(DFCodeblockName.CALL_FUNCTION)?.dynamic,
+                name: backendName,
+                description: commentsToDocumentation(statement.attachedComments),
+                signatures: [{params: signatureParams}],
+                defaultReturnType: returnType,
+                getReturnType: USE_DEFAULT_RETURN_TYPE,
+                compile: isProcess ? COMPILE_START_PROCESS : COMPILE_CALL_FUNCTION,
+                astNode: statement,
+            };
+    }
+
     /** 
      * If a RootNode is passed in, an extra frame will be created to represent that RootNode's document 
      * The RootNode's statements will then be collected
      * */
     collectionStage(statements: RootNode[] | Statement[], defaultFrame: EnvironmentFrame = this.globalFrame) {        
+        // When given a full set of files, register every file's top-level 'type' declarations
+        // FIRST, across all files, before collecting anything else. Otherwise things like a
+        // 'declare' statement or an 'extend' block in one file would fail to resolve a type
+        // that's declared in another file, purely because of the order files happen to be
+        // processed in.
+        if (statements.length > 0 && statements.every(s => s instanceof RootNode)) {
+            let roots = statements as RootNode[];
+            let rootFrames: EnvironmentFrame[] = [];
+            for (const root of roots) {
+                let rootFrame = this.framesByASTNode.get(root) ?? defaultFrame.addChild(root);
+                this.framesByASTNode.set(root, rootFrame);
+                rootFrames.push(rootFrame);
+                for (const statement of root.statements) {
+                    if (statement instanceof TypeStatement) this.applyStatementVariables(statement, rootFrame);
+                }
+            }
+            for (let i = 0; i < roots.length; i++) {
+                this.collectionStage(roots[i].statements, rootFrames[i]);
+            }
+            return;
+        }
+
         for (let statement of statements) {
             let frame = defaultFrame;
             // handle root nodes
             if (statement instanceof RootNode) {
-                let rootFrame = frame.addChild(statement);
+                let rootFrame = this.framesByASTNode.get(statement) ?? frame.addChild(statement);
                 this.framesByASTNode.set(statement, rootFrame);
                 this.collectionStage(statement.statements, rootFrame);
                 continue;
@@ -611,6 +717,12 @@ export class TypeProcessor {
                 // declare statements always push things to the top of the global frame
                 frame = this.globalFrame; 
                 varPositionOverride = -1;
+            }
+
+            if (statement instanceof TypeStatement) {
+                // already registered by the cross-file pre-pass above; registering it again here
+                // would make it look like a duplicate type declaration
+                continue;
             }
             
             // variable assignments
@@ -980,6 +1092,15 @@ export class TypeProcessor {
                 expression.type,
                 `Variable type is not allowed here`
             );
+        }
+        if (name in CUSTOM_TYPES) {
+            if (expression.subType) {
+                if (reportErrors) this.reportError(
+                    expression.subType,
+                    `Type '${name}' is not generic and does not support subtypes`
+                );
+            }
+            return CUSTOM_TYPES[name];
         }
         if (Type[name] && Type[name] instanceof Type) {
             if (expression.subType) {

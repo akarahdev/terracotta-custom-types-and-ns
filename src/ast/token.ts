@@ -8,6 +8,9 @@ export enum TokenType {
     FUNCTION,
     PROCESS,
     DECLARE,
+    TYPE,
+    EXTEND,
+    MACRO,
 
     CALL,
     START,

@@ -8,10 +8,17 @@ import { EvaluationContext } from "../codeCompiler.ts";
 import { CodeValue, EmptyValue, MultiValue, TangibleValue, VariableValue } from "../codeValue.ts";
 import { compileTags, handleSingleBlockReturnVars } from "./builtins.ts";
 import { FunctionCallExtraInfo, FunctionDefinition } from "./definition.ts";
+import { methodizeParameterSignatures } from "./utils.ts";
 
 export function COMPILE_CALL_FUNCTION(this: FunctionDefinition, args: CodeValue[], namedArgs: Map<AtomicExpression, [CodeValue, Expression]>, ctx: EvaluationContext, callNode: CallExpression, extraInfo: FunctionCallExtraInfo): [CodeValue, CodeBlock[]] {
-    // TODO: handle user-defined methods
-    validateArguments(args, callNode, this.signatures, ctx);
+    let signaturesToCheck = this.signatures;
+    if (extraInfo.methodCallOf) {
+        signaturesToCheck = methodizeParameterSignatures(this.signatures, extraInfo.methodCallOf.getType(ctx.types));
+    }
+    validateArguments(args, callNode, signaturesToCheck, ctx);
+
+    // cloning the list here is intentional so that whatever passed in args doesnt get its list mutated
+    if (extraInfo.methodCallOf) args = [extraInfo.methodCallOf, ...args];
 
     let finalArgs = args.filter(arg => arg instanceof TangibleValue)
     let [returnValue] = handleSingleBlockReturnVars(this, ctx, extraInfo, callNode, finalArgs);

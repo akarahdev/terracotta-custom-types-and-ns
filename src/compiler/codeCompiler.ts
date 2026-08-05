@@ -1,7 +1,7 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
-import { AssignmentStatement, DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, PerSelectedStatement, SingleKeywordStatement, Statement, WhileStatement, DeclareStatement } from "../ast/statement.ts";
+import { AssignmentStatement, DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, PerSelectedStatement, SingleKeywordStatement, Statement, WhileStatement, DeclareStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
 import { Token, TokenType } from "../ast/token.ts";
-import { isVariableEntry, TypeProcessor, VariableScope } from "../typeProcessor/typeProcessor.ts";
+import { getExtensionFunctionBackendName, isVariableEntry, TypeProcessor, VariableScope } from "../typeProcessor/typeProcessor.ts";
 import { getOrCreateDictLayer, getOrCreateMapLayer, ps, tcParseNumber, toNameCase, upperFirst } from "../util/utils.ts";
 import { ActionBlock, BracketBlock, BracketDirection, BracketType, CodeBlock, ElseBlock, EventBlock, SubActionBlock } from "./codeBlock.ts";
 import * as fflate from "fflate";
@@ -246,11 +246,30 @@ export class CodeCompiler {
                 statementMap.getOrInsert(s.headerType,new Map()).getOrInsert(tcEvent,[]).push(s);
                 lineEntry.headerBlock = new EventBlock(headerType, {action: dfEvent, lsCancel: lsCancel, astNode: s});
             }
+            else if (s instanceof TypeStatement) {
+                continue;
+            }
+            else if (s instanceof ExtendStatement) {
+                if (!(s.chunk instanceof ChunkExpression)) continue;
+                let targetType = this.env.types.evaluateExplicitType(s.type);
+                let functions: FunctionStatement[] = [];
+                for (const inner of s.chunk.statements) {
+                    if (inner instanceof FunctionStatement) {
+                        inner.backendName = inner.backendName ?? getExtensionFunctionBackendName(targetType.name, inner.name.value);
+                        functions.push(inner);
+                    } else {
+                        this.reportError(inner, `Only function declarations are allowed inside extend blocks`);
+                    }
+                }
+                declarationsToCompile.push(...this.processLineDeclarations(functions));
+                continue;
+            }
             else if (s instanceof FunctionStatement) {
                 let headerType: HeaderType = DFCodeblockName[TokenType[s.keyword.type]];
+                let headerName = s.backendName ?? s.name.value;
                 // TODO: warning for trying to include pcodes in name
 
-                this.shadowingCheck(s.name, "Function");
+                if (s.backendName == null) this.shadowingCheck(s.name, "Function");
                 
                 let parameters: ParameterValue[] = [];
                 if (s.params) {
@@ -272,8 +291,9 @@ export class CodeCompiler {
                         let tcType: Type | null = null;
                         if (param.assignedType) {
                             tcType = this.env.types.evaluateExplicitType(param.assignedType.type);
-                            if (tcType.name in tcTypeToDFParamType) {
-                                dfType = tcTypeToDFParamType[tcType.name];
+                            let runtimeType = tcType.getRuntimeType();
+                            if (runtimeType.name in tcTypeToDFParamType) {
+                                dfType = tcTypeToDFParamType[runtimeType.name];
                             } else {
                                 this.reportError(
                                     param.assignedType.type,
@@ -351,7 +371,8 @@ export class CodeCompiler {
                             }
 
                             tcReturnTypes.push(type);
-                            if (type.name in tcTypeToDFParamType) {
+                            let runtimeType = type.getRuntimeType();
+                            if (runtimeType.name in tcTypeToDFParamType) {
                                 parameters.splice(i, 0, new ParameterValue(
                                     `@__TC_RET_${i}`, 
                                     "var", 
@@ -379,11 +400,11 @@ export class CodeCompiler {
                     );
                 }
                 
-                lineEntry = this.getLineEntry(headerType, s.name.value);
+                lineEntry = this.getLineEntry(headerType, headerName);
                 if (headerType == DFCodeblockName.FUNCTION) lineEntry.returnTypes = tcReturnTypes;
-                statementMap.getOrInsert(s.headerType, new Map()).getOrInsert(s.name.value,[]).push(s);
+                statementMap.getOrInsert(s.headerType, new Map()).getOrInsert(headerName,[]).push(s);
                 lineEntry.headerBlock = new ActionBlock(s.headerType, {
-                    action: s.name.value,
+                    action: headerName,
                     args: parameters
                 })
             }
