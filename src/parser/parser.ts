@@ -1,12 +1,15 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
 import { BinaryExpression, Expression, AtomicExpression, GroupExpression, MissingExpression, ListExpression, CallExpression, AccessExpression, ChunkExpression, VariableExpression, CallOrStartExpression, TypeExpression, TypeAssignmentExpression, ParameterExpression, MultiTypeAssignmentExpression, DictionaryEntryExpression, DictionaryExpression, UnaryPrefixExpression, BracketedAccessExpression, TypecastExpression, DictionaryTypeExpression, DictionaryTypeEntryExpression, PerSelectedExpression, SelectionExpression } from "../ast/expression.ts";
-import { EventStatement, ExpressionStatement, RepeatStatement, ReturnStatement, SingleKeywordStatement, Statement, FunctionStatement, IfStatement, WhileStatement, ForStatement, DoStatement, AssignmentStatement, PerSelectedStatement, DeclareStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
+import { EventStatement, ExpressionStatement, RepeatStatement, ReturnStatement, SingleKeywordStatement, Statement, FunctionStatement, IfStatement, WhileStatement, ForStatement, DoStatement, AssignmentStatement, PerSelectedStatement, DeclareStatement, TypeStatement, ExtendStatement, IncrementStatement } from "../ast/statement.ts";
 import { Token, TokenType, BindingPower } from "../ast/token.ts";
 import { ErrorPositionMode, ErrorType, TCError, TCNodeError } from "../error/error.ts";
 import { dirWithoutRelations } from "../util/debug.ts";
 
 export const VARIABLE_SCOPE_KEYWORDS = [TokenType.GLOBAL,TokenType.SAVED,TokenType.LOCAL,TokenType.LOCAL];
-export const ASSIGNMENT_OPERATORS = [TokenType.EQUALS, TokenType.PLUS_EQUALS, TokenType.MINUS_EQUALS, TokenType.STAR_EQUALS, TokenType.SLASH_EQUALS];
+export const ASSIGNMENT_OPERATORS = [
+    TokenType.EQUALS, TokenType.PLUS_EQUALS, TokenType.MINUS_EQUALS, TokenType.STAR_EQUALS, TokenType.SLASH_EQUALS, TokenType.POW_EQUALS, TokenType.PERCENT_EQUALS, TokenType.PERC_PERC_EQUALS,
+    TokenType.BW_OR_EQUALS, TokenType.PBW_OR_EQUALS, TokenType.BW_AND_EQUALS, TokenType.PBW_AND_EQUALS, TokenType.BW_XOR_EQUALS, TokenType.PBW_XOR_EQUALS, TokenType.BW_LSHIFT_EQUALS, TokenType.PBW_LSHIFT_EQUALS, TokenType.BW_RSHIFT_EQUALS, TokenType.PBW_RSHIFT_EQUALS, TokenType.BW_URSHIFT_EQUALS, TokenType.PBW_URSHIFT_EQUALS, 
+];
 
 export type NUDProcessingProperties = {
     /** binding power */
@@ -63,6 +66,7 @@ export class Parser {
             [TokenType.STAR_EQUALS,     {bp: BindingPower.ASSIGN,   processor: this.parseBinaryExpression}],
             [TokenType.SLASH_EQUALS,    {bp: BindingPower.ASSIGN,   processor: this.parseBinaryExpression}],
             [TokenType.PERCENT_EQUALS,  {bp: BindingPower.ASSIGN,   processor: this.parseBinaryExpression}],
+            [TokenType.PERC_PERC_EQUALS,{bp: BindingPower.ASSIGN,   processor: this.parseBinaryExpression}],
             [TokenType.POW_EQUALS,      {bp: BindingPower.ASSIGN,   processor: this.parseBinaryExpression}],
 
             [TokenType.DOUBLE_EQUALS,   {bp: BindingPower.EQUALITY, processor: this.parseBinaryExpression}],
@@ -77,6 +81,7 @@ export class Parser {
             [TokenType.STAR,            {bp: BindingPower.MULT,     processor: this.parseBinaryExpression}],
             [TokenType.SLASH,           {bp: BindingPower.MULT,     processor: this.parseBinaryExpression}],
             [TokenType.PERCENT,         {bp: BindingPower.MULT,     processor: this.parseBinaryExpression}],
+            [TokenType.PERC_PERC,       {bp: BindingPower.MULT,     processor: this.parseBinaryExpression}],
             [TokenType.POW,             {bp: BindingPower.EXPO,     processor: this.parseBinaryExpression}],
             
             [TokenType.BOOL_AND,        {bp: BindingPower.BOOL_AND, processor: this.parseBinaryExpression}],
@@ -623,6 +628,7 @@ export class Parser {
         while (this.currentToken().type != closerType && this.currentToken().type != TokenType.EOF) {
             let comments = this.consumeComments();
             let currentTokenType = this.currentToken().type;            
+            if (currentTokenType == closerType || currentTokenType == TokenType.EOF) break;
 
             let useSpecialStatement = this.tokenStatementProcessors.has(currentTokenType);
             let statement: Statement | null = null;
@@ -730,12 +736,19 @@ export class Parser {
         return new ExtendStatement(keyword, type, chunk);
     }
 
-    parseExpressionStatement = (): ExpressionStatement | AssignmentStatement => {
+    parseExpressionStatement = (): ExpressionStatement | AssignmentStatement | IncrementStatement => {
         let allExpressions: Expression[] = [];
         let separators: Token[] = [];
 
         while (true) {
             let expression = this.parseExpression(BindingPower.DEFAULT);
+            if (
+                allExpressions.length == 0
+                && (this.currentToken().type == TokenType.PLUS_PLUS || this.currentToken().type == TokenType.MINUS_MINUS)
+            ) {
+                let operator = this.consume();
+                return new IncrementStatement(expression, operator);
+            }
             // handle assignment operator
             if (expression instanceof BinaryExpression && ASSIGNMENT_OPERATORS.includes(expression.operator.type)) {
                 allExpressions.push(expression.left);

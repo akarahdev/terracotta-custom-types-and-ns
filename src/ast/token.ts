@@ -87,6 +87,7 @@ export enum TokenType {
     STAR_EQUALS,
     SLASH_EQUALS,
     PERCENT_EQUALS,
+    PERC_PERC_EQUALS,
     POW_EQUALS,
 
     BANG,
@@ -101,7 +102,11 @@ export enum TokenType {
     STAR,
     SLASH,
     PERCENT,
+    PERC_PERC,
     POW,
+
+    PLUS_PLUS,
+    MINUS_MINUS,
 
     BW_OR_EQUALS,
     BW_AND_EQUALS,

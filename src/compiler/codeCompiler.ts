@@ -1,5 +1,5 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
-import { AssignmentStatement, DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, PerSelectedStatement, SingleKeywordStatement, Statement, WhileStatement, DeclareStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
+import { AssignmentStatement, DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, PerSelectedStatement, SingleKeywordStatement, Statement, WhileStatement, DeclareStatement, IncrementStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
 import { Token, TokenType } from "../ast/token.ts";
 import { getExtensionFunctionBackendName, isVariableEntry, TypeProcessor, VariableScope } from "../typeProcessor/typeProcessor.ts";
 import { getOrCreateDictLayer, getOrCreateMapLayer, ps, tcParseNumber, toNameCase, upperFirst } from "../util/utils.ts";
@@ -514,11 +514,11 @@ export class CodeCompiler {
     compileCallExpression(e: CallExpression | CallOrStartExpression, definition: FunctionDefinition, context: ExpressionContext, extraInfo: FunctionCallExtraInfo = {}): [CodeValue, CodeBlock[]] {
         if (
             (extraInfo.methodCallOf instanceof VariableValue && extraInfo.methodCallOf.isTempVar)
-            || !(extraInfo.methodCallOf instanceof VariableValue)
+            || (extraInfo.methodCallOf instanceof GameValueValue)
         ) {
             for (const sig of definition.signatures) {
                 if (sig.params.length > 0 && sig.params[0].type.matches(Type.var)) {
-                    this.reportError(getImprovedErrorNode(e),"Methods which expect a reference cannot be called on this value");
+                    this.reportError(getImprovedErrorNode(e),"Methods which expect a reference cannot be called here");
                     break;
                 }
             }
@@ -1360,41 +1360,54 @@ export class CodeCompiler {
                 return code;
             }
         }
-        else if (s instanceof AssignmentStatement && s.isErrorFree()) {
+        else if ((s instanceof AssignmentStatement && s.isErrorFree()) || s instanceof IncrementStatement) {
+            let rawValue: CodeValue;
             let values: CodeValue[];
+            let assigneeExpressions: Expression[];
 
-            let [rawValue, valueCode] = this.compileExpression(s.rightValue, exprContext);
-            if (rawValue instanceof MultiValue) {
-                values = [...rawValue.values];
-            } else {                
+            // assignment statement: proceed as normal
+            let valueCode: CodeBlock[];
+            if (s instanceof AssignmentStatement) {
+                [rawValue, valueCode] = this.compileExpression(s.rightValue, exprContext);
+                if (rawValue instanceof MultiValue) {
+                    values = [...rawValue.values];
+                } else {                
+                    values = [rawValue];
+                }
+                for (let v of values) {
+                    let vType = v.getType(this.env.types);
+                    if (!Type.assignableTypes.has(vType.name)){
+                        this.reportError(
+                            s.rightValue,
+                            `Type '${vType.name}' cannot be stored in variables`
+                        );
+                        return [];
+                    }
+        
+                    if (!(v instanceof TangibleValue)) {
+                        this.reportError(
+                            v.astNode ?? s.rightValue,
+                            `${v.constructor.name} cannot be stored in variables`,
+                            v
+                        );
+                        
+                        return [];
+                    }
+                }
+                assigneeExpressions = s.leftValues;
+            } 
+            // increment statement: treat this the same as `value += 1`;
+            else {
+                assigneeExpressions = [s.target];
+                rawValue = new NumberValue("1");
                 values = [rawValue];
+                valueCode = [];
             }
-            for (let v of values) {
-                let vType = v.getType(this.env.types);
-                if (!Type.assignableTypes.has(vType.name)){
-                    this.reportError(
-                        s.rightValue,
-                        `Type '${vType.name}' cannot be stored in variables`
-                    );
-                    return [];
-                }
-    
-                if (!(v instanceof TangibleValue)) {
-                    this.reportError(
-                        v.astNode ?? s.rightValue,
-                        `${v.constructor.name} cannot be stored in variables`,
-                        v
-                    );
-                    
-                    return [];
-                }
-            }
-
 
             let code: CodeBlock[] = [...valueCode];
 
-            for (let i = 0; i < s.leftValues.length; i++) {
-                let assigneeExpr = s.leftValues[i];
+            for (let i = 0; i < assigneeExpressions.length; i++) {
+                let assigneeExpr = assigneeExpressions[i];
                 if (i >= values.length) {
                     if (rawValue instanceof MultiValue && rawValue.overflowType != Type.void) {
                         let newVal = tvp.newTempVar((rawValue as MultiValue).overflowType)
@@ -1475,7 +1488,10 @@ export class CodeCompiler {
                     // base case: actually modify the value
                     else {
                         if (!(values[i] instanceof TangibleValue)) {
-                            this.reportError(values[i].astNode ?? s.rightValue[i], "This value cannot be stored in variables");
+                            this.reportError(
+                                values[i].astNode ?? (s instanceof AssignmentStatement ? s.rightValue[i] : s), 
+                                "This value cannot be stored in variables"
+                            );
                             return;
                         }
                         let val = values[i] as TangibleValue;
@@ -1498,7 +1514,7 @@ export class CodeCompiler {
                                 code.push(...getterCode);
                                 incrementBase = child;
                             }
-                            let [newValue, newCode] = Operations.evaluateBinaryValue(incrementBase, s.operator, val, this.getEvaluationContext())
+                            let [newValue, newCode] = Operations.evaluateBinaryValue(incrementBase, s.operator, val, this.getEvaluationContext(), s instanceof IncrementStatement)
                             if (!(newValue instanceof TangibleValue)) return;
                             val = newValue;
                             code.push(...newCode);
