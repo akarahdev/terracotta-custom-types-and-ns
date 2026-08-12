@@ -1826,16 +1826,16 @@ export class CodeCompiler {
             else {
                 let [iteratorValue, iteratorValueCode] = this.compileExpression(iteratorExpr, exprContext);
                 code.push(...iteratorValueCode);
-                
+                let iteratorValueType = iteratorValue.getType(this.env.types).getRuntimeType();
                 // iterate over lists
-                if (iteratorValue.getType(this.env.types).matches(Type.list) && iteratorValue instanceof TangibleValue) { 
+                if (iteratorValueType.matches(Type.list) && iteratorValue instanceof TangibleValue) { 
                     code.push(new ActionBlock(DFCodeblockName.REPEAT, {
                         action: "ForEach",
                         args: [...varValues, iteratorValue]
                     }));
                 }
                 // iterate over dicts
-                else if (iteratorValue.getType(this.env.types).matches(Type.dict) && iteratorValue instanceof TangibleValue) {
+                else if (iteratorValueType.matches(Type.dict) && iteratorValue instanceof TangibleValue) {
                     expectedVars = 2;
                     code.push(new ActionBlock(DFCodeblockName.REPEAT, {
                         action: "ForEachEntry",
