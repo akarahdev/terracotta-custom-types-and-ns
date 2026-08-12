@@ -644,7 +644,7 @@ export class CodeCompiler {
                 return false;
             }
     
-            let accesseeType = accessee.getType(this.env.types);
+            let accesseeType = accessee.getType(this.env.types).getRuntimeType();
             let accessorType = accessor.getType(this.env.types);
             let accessorValue: number | string | undefined = undefined;
             if (accessor.isCompileTimeConstant()) {
@@ -743,7 +743,7 @@ export class CodeCompiler {
         if (mode == "member" && accessor instanceof TangibleValue) {
             let tvp = context.perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider;
     
-            let accesseeType = accessee.getType(this.env.types);
+            let accesseeType = accessee.getType(this.env.types).getRuntimeType();
     
             // list accessing
             if (accesseeType.matches(Type.list)) {
@@ -793,7 +793,7 @@ export class CodeCompiler {
         mode: "member" | "property",
         context: ExpressionContext
     ): CodeBlock[] {
-        let accesseeType = accessee.getType(this.env.types);
+        let accesseeType = accessee.getType(this.env.types).getRuntimeType();
         if (mode == "member" && accessor instanceof TangibleValue) {
             if (accesseeType.matches(Type.list)) {
                 return [new ActionBlock(DFCodeblockName.SET_VARIABLE,{
