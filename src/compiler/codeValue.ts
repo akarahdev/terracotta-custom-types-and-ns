@@ -469,7 +469,11 @@ export class VariableValue extends TangibleValue {
         return {
             "id": "var",
             "data": {
-                "name": this.name,
+                // DF variable names are strings.  Dynamic names such as
+                // `%var(referenceName)` are represented internally as PCode
+                // objects, so serialize their rendered form rather than the
+                // object array itself.
+                "name": typeof this.name == "string" ? this.name : this.name.join(""),
                 "scope": scope,
             }
         };

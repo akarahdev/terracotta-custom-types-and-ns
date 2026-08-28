@@ -3,7 +3,7 @@ import { Lexer } from "../src/parser/lexer.ts";
 import { Parser } from "../src/parser/parser.ts";
 import { CodeCompiler } from "../src/compiler/codeCompiler.ts";
 import { ActionBlock } from "../src/compiler/codeBlock.ts";
-import { VariableValue } from "../src/compiler/codeValue.ts";
+import { StringValue, VariableValue } from "../src/compiler/codeValue.ts";
 import { DFCodeblockName, DFRank } from "../src/df/constants.ts";
 import { TCError } from "../src/error/error.ts";
 import {
@@ -17,6 +17,15 @@ import {
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+function renderedVariableName(value: VariableValue): string {
+  return typeof value.name == "string" ? value.name : value.name.join("");
+}
+
+function isDynamicVariableReference(value: unknown): value is VariableValue {
+  return value instanceof VariableValue &&
+    renderedVariableName(value).startsWith("%var(");
 }
 
 function compileScripts(
@@ -204,7 +213,9 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
             numbers.one = 3;
             numbers[key] = 4;
             if (namespace.has_member(numbers, key)) {}
-            for (line entryKey, line entryValue of numbers) {}
+            for (line entryKey, line entryValue of numbers) {
+                line incremented = entryValue + 1;
+            }
         }
     `]);
 
@@ -224,6 +235,18 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
     )),
     "missing schema namespace dictionary initialization",
   );
+  assert(
+    startup.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "CreateList" &&
+      block.args.some((argument) => (
+        argument instanceof StringValue &&
+        argument.value ==
+          getSourceNamespaceMemberBackendName(["numbers"], "one")
+      ))
+    )),
+    "schema dictionary should contain backing variable names rather than copied values",
+  );
   const join =
     result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
   assert(
@@ -234,9 +257,9 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
   );
   assert(
     join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "GetDictValues"
+      block instanceof ActionBlock && block.action == "AppendValue"
     ),
-    "missing namespace.getValues lowering",
+    "namespace.getValues should build a dereferenced values list",
   );
   assert(
     join.code.flat().some((block) =>
@@ -245,24 +268,43 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
     "missing namespace.has_member lowering",
   );
   assert(
-    join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "SetDictValue"
-    ),
-    "qualified schema writes should update the runtime dictionary",
-  );
-  assert(
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
-      block.block == DFCodeblockName.IF_VARIABLE &&
-      block.action == "="
+      block.action == "=" &&
+      block.args.some(isDynamicVariableReference)
     )),
-    "computed namespace writes should synchronize known mangled members",
+    "computed namespace reads and writes should dereference the stored variable name",
+  );
+  const dynamicReferences = join.code.flat().flatMap((block) =>
+    block instanceof ActionBlock ? block.args : []
+  ).filter(isDynamicVariableReference);
+  assert(
+    dynamicReferences.every((reference) =>
+      reference.templateForm().data.name == renderedVariableName(reference)
+    ),
+    "dynamic namespace references must serialize as %var(...) strings",
   );
   assert(
     join.code.flat().some((block) =>
       block instanceof ActionBlock && block.action == "ForEachEntry"
     ),
     "schema namespace should be iterable as a dictionary",
+  );
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args[0] instanceof VariableValue &&
+      renderedVariableName(block.args[0]) == "entryValue" &&
+      isDynamicVariableReference(block.args[1])
+    )),
+    "namespace iteration should dereference each backing variable name",
+  );
+  assert(
+    !join.code.flat().some((block) =>
+      block instanceof ActionBlock && block.action == "SetDictValue"
+    ),
+    "namespace writes must not replace reference entries with copied values",
   );
 });
 
@@ -296,6 +338,28 @@ Deno.test("unschemed namespaces reject reflection and dynamic indexing", () => {
       )
     ),
     "unschemed namespaces must reject reflection",
+  );
+});
+
+Deno.test("namespace declarations are rejected from runtime code", () => {
+  const result = compileScripts([`
+        playerevent join {
+            namespace invalid {
+                value: num = 1;
+            }
+        }
+    `]);
+
+  const messages = result.errors.filter((error) => !error.isWarning).map(
+    (error) => error.message,
+  );
+  assert(
+    messages.some((message) =>
+      message.includes(
+        "Namespace declarations can only appear at the top level",
+      )
+    ),
+    "namespace declarations inside runtime code must not be silently ignored",
   );
 });
 
@@ -350,12 +414,21 @@ Deno.test("namespace output survives the production optimizer", () => {
             process deferred(message: txt) {}
         }
 
+        namespace counters {
+            schema: num;
+            current: 1;
+        }
+
         import handlers;
+        import counters;
         playerevent join {
             line key = "immediate";
             handlers[key](s"hello");
             key = "deferred";
             start handlers[key](s"hello");
+            line counterKey = "current";
+            line counter = counters[counterKey];
+            counters[counterKey] = counter + 1;
         }
     `], true);
 
@@ -363,6 +436,127 @@ Deno.test("namespace output survives the production optimizer", () => {
   assert(
     hardErrors.length == 0,
     hardErrors.map((error) => error.message).join("\n"),
+  );
+  const join =
+    result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args.some(isDynamicVariableReference)
+    )),
+    "optimizer must preserve dynamic references to namespace backing variables",
+  );
+});
+
+Deno.test("mixed namespace shapes retain value references and function selectors", () => {
+  const result = compileScripts([`
+        namespace entity_type {
+            schema: namespace {
+                hardness: num;
+                function on_spawn() -> void;
+            };
+        }
+
+        namespace entity_type.zombie {
+            hardness: num = 5;
+            function on_spawn() {}
+        }
+
+        import entity_type;
+        playerevent join {
+            line id = "zombie";
+            line values = namespace.getValues(entity_type[id]);
+            for (line key, line value of entity_type[id]) {}
+            entity_type[id].hardness = 6;
+            entity_type[id].on_spawn();
+        }
+    `], true);
+
+  const hardErrors = result.errors.filter((error) => !error.isWarning);
+  assert(
+    hardErrors.length == 0,
+    hardErrors.map((error) => error.message).join("\n"),
+  );
+  const startup =
+    result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
+  assert(
+    startup.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "CreateList" &&
+      block.args.some((argument) => (
+        argument instanceof StringValue &&
+        argument.value ==
+          getSourceNamespaceDictionaryBackendName(["entity_type", "zombie"])
+      ))
+    )),
+    "parent dictionaries should store child dictionary variable names",
+  );
+  assert(
+    startup.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "CreateList" &&
+      block.args.some((argument) => (
+        argument instanceof StringValue &&
+        argument.value ==
+          getSourceNamespaceMemberBackendName(
+            ["entity_type", "zombie"],
+            "hardness",
+          )
+      ))
+    )),
+    "shape value fields should store backing variable names",
+  );
+  assert(
+    startup.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "CreateList" &&
+      block.args.some((argument) => (
+        argument instanceof StringValue &&
+        argument.value ==
+          getSourceNamespaceMemberBackendName(
+            ["entity_type", "zombie"],
+            "on_spawn",
+          )
+      ))
+    )),
+    "shape function fields should retain their dynamic call selectors",
+  );
+
+  const join =
+    result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
+  const appendedValues = join.code.flat().filter((
+    block,
+  ): block is ActionBlock =>
+    block instanceof ActionBlock && block.action == "AppendValue"
+  );
+  assert(
+    appendedValues.some((block) => isDynamicVariableReference(block.args[1])),
+    "namespace.getValues must dereference shape value fields",
+  );
+  assert(
+    appendedValues.some((block) => (
+      block.args[1] instanceof VariableValue &&
+      !isDynamicVariableReference(block.args[1])
+    )),
+    "namespace.getValues must leave function selectors as selector names",
+  );
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.block == DFCodeblockName.IF_VARIABLE &&
+      block.action == "=" &&
+      block.args.some((argument) =>
+        argument instanceof StringValue && argument.value == "on_spawn"
+      )
+    )),
+    "mixed-shape iteration and reflection should branch on function fields",
+  );
+  assert(
+    !join.code.flat().some((block) =>
+      block instanceof ActionBlock && block.action == "SetDictValue"
+    ),
+    "shape writes must not replace dictionary references with copied values",
   );
 });
 
@@ -459,11 +653,9 @@ Deno.test("namespace shape defaults and dynamic function dispatch compile throug
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "=" &&
-      block.args[0] instanceof VariableValue &&
-      block.args[0].name ==
-        getSourceNamespaceDictionaryBackendName(["entity_type", "zombie"])
+      block.args.some(isDynamicVariableReference)
     )),
-    "dynamic nested writes should synchronize the matching child dictionary",
+    "dynamic nested writes should target the dereferenced child backing variable",
   );
 });
 
@@ -664,6 +856,32 @@ Deno.test("namespace defaults materialize nested namespaces before imports resol
   );
 });
 
+Deno.test("conflicting namespace schemas are rejected across files", () => {
+  const result = compileScripts([
+    `
+        namespace duplicate_schema {
+            schema: num;
+        }
+    `,
+    `
+        namespace duplicate_schema {
+            schema: str;
+        }
+    `,
+  ]);
+
+  const messages = result.errors.filter((error) => !error.isWarning).map(
+    (error) => error.message,
+  );
+  assert(
+    messages.filter((message) =>
+      message.includes("duplicate_schema") &&
+      message.includes("more than one schema")
+    ).length == 2,
+    "each conflicting schema declaration should be diagnosed after cross-file merging",
+  );
+});
+
 Deno.test("optional shape fields remain absent from statically known conformers", () => {
   const result = compileScripts([`
         namespace config {
@@ -737,7 +955,7 @@ Deno.test("namespace validation rejects incompatible declarations without leakin
   );
 });
 
-Deno.test("unqualified namespace-variable writes keep schema dictionaries synchronized", () => {
+Deno.test("unqualified namespace-variable writes update only their backing variables", () => {
   const result = compileScripts([`
         namespace counters {
             schema: namespace {
@@ -770,12 +988,18 @@ Deno.test("unqualified namespace-variable writes keep schema dictionaries synchr
   assert(
     bump.code.flat().some((block) => (
       block instanceof ActionBlock &&
-      block.action == "SetDictValue" &&
+      block.action == "=" &&
       block.args[0] instanceof VariableValue &&
-      block.args[0].name ==
-        getSourceNamespaceDictionaryBackendName(["counters", "one"])
+      renderedVariableName(block.args[0]) ==
+        getSourceNamespaceMemberBackendName(["counters", "one"], "count")
     )),
-    "unqualified namespace variable write did not update the child dictionary",
+    "unqualified namespace variable write did not update the backing global variable",
+  );
+  assert(
+    !bump.code.flat().some((block) =>
+      block instanceof ActionBlock && block.action == "SetDictValue"
+    ),
+    "direct namespace writes must not overwrite dictionary reference entries",
   );
 });
 
@@ -852,6 +1076,20 @@ Deno.test("partial nested defaults and chained dynamic namespace access preserve
       block instanceof ActionBlock && block.action == "GetDictValue"
     ).length >= 3,
     "chained dynamic namespace access did not emit sequential dictionary reads",
+  );
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args.some(isDynamicVariableReference)
+    )),
+    "chained dynamic namespace writes did not target backing variables",
+  );
+  assert(
+    !join.code.flat().some((block) =>
+      block instanceof ActionBlock && block.action == "SetDictValue"
+    ),
+    "chained writes must not copy a changed child back into a namespace dictionary",
   );
 
   const bump = result.compiler.codeLines.get(DFCodeblockName.FUNCTION)![

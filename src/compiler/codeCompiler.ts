@@ -1,2434 +1,3453 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
-import { AssignmentStatement, DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, PerSelectedStatement, SingleKeywordStatement, Statement, WhileStatement, DeclareStatement, IncrementStatement, TypeStatement, ExtendStatement, ImportStatement, NamespaceSchemaStatement, NamespaceStatement, NamespaceVariableStatement } from "../ast/statement.ts";
+import {
+  AssignmentStatement,
+  DeclareStatement,
+  DoStatement,
+  EventStatement,
+  ExpressionStatement,
+  ExtendStatement,
+  ForStatement,
+  FunctionStatement,
+  IfStatement,
+  ImportStatement,
+  IncrementStatement,
+  NamespaceSchemaStatement,
+  NamespaceStatement,
+  NamespaceVariableStatement,
+  PerSelectedStatement,
+  RepeatStatement,
+  ReturnStatement,
+  SingleKeywordStatement,
+  Statement,
+  TypeStatement,
+  WhileStatement,
+} from "../ast/statement.ts";
 import { Token, TokenType } from "../ast/token.ts";
-import { getExtensionFunctionBackendName, isVariableEntry, TypeProcessor, VariableScope } from "../typeProcessor/typeProcessor.ts";
-import { getOrCreateDictLayer, getOrCreateMapLayer, ps, tcParseNumber, toNameCase, upperFirst } from "../util/utils.ts";
-import { ActionBlock, BracketBlock, BracketDirection, BracketType, CodeBlock, ElseBlock, EventBlock, SubActionBlock } from "./codeBlock.ts";
+import {
+  getExtensionFunctionBackendName,
+  isVariableEntry,
+  TypeProcessor,
+  VariableScope,
+} from "../typeProcessor/typeProcessor.ts";
+import {
+  ensurePCodeness,
+  getOrCreateDictLayer,
+  getOrCreateMapLayer,
+  ps,
+  tcParseNumber,
+  toNameCase,
+  upperFirst,
+} from "../util/utils.ts";
+import {
+  ActionBlock,
+  BracketBlock,
+  BracketDirection,
+  BracketType,
+  CodeBlock,
+  ElseBlock,
+  EventBlock,
+  SubActionBlock,
+} from "./codeBlock.ts";
 import * as fflate from "fflate";
 import * as AD from "../df/actiondump.ts";
-import { ErrorType, TCError, TCNodeError, TCNodePCodeError, TCStandaloneError } from "../error/error.ts";
-import { AccessExpression, AtomicExpression, BinaryExpression, BracketedAccessExpression, CallExpression, CallOrStartExpression, ChunkExpression, DictionaryExpression, Expression, GroupExpression, ListExpression, MissingExpression, PerSelectedExpression, SelectionExpression, TypecastExpression, UnaryPrefixExpression, VariableExpression } from "../ast/expression.ts";
-import { CodeValue, EmptyValue, FunctionValue, ItemValue, MissingValue, MultiValue, NamespaceValue, NumberValue, ParameterValue, LibraryItemValue, StringValue, StyledTextValue, TangibleValue, VariableValue, GameValueValue } from "./codeValue.ts";
+import {
+  ErrorType,
+  TCError,
+  TCNodeError,
+  TCNodePCodeError,
+  TCStandaloneError,
+} from "../error/error.ts";
+import {
+  AccessExpression,
+  AtomicExpression,
+  BinaryExpression,
+  BracketedAccessExpression,
+  CallExpression,
+  CallOrStartExpression,
+  ChunkExpression,
+  DictionaryExpression,
+  Expression,
+  GroupExpression,
+  ListExpression,
+  MissingExpression,
+  PerSelectedExpression,
+  SelectionExpression,
+  TypecastExpression,
+  UnaryPrefixExpression,
+  VariableExpression,
+} from "../ast/expression.ts";
+import {
+  CodeValue,
+  EmptyValue,
+  FunctionValue,
+  GameValueValue,
+  ItemValue,
+  LibraryItemValue,
+  MissingValue,
+  MultiValue,
+  NamespaceValue,
+  NumberValue,
+  ParameterValue,
+  StringValue,
+  StyledTextValue,
+  TangibleValue,
+  VariableValue,
+} from "./codeValue.ts";
 import { Namespace } from "./namespace/namespace.ts";
 import { TempVarProvider } from "./tempVarProvider.ts";
 import { Operations } from "./operations.ts";
-import { DefinitionType, FunctionCallExtraInfo, FunctionDefinition, isFunctionDefinition, isNamespaceVariableDefinition, isPropertyDefinition, isValueDefinition } from "./namespace/definition.ts";
+import {
+  DefinitionType,
+  FunctionCallExtraInfo,
+  FunctionDefinition,
+  isFunctionDefinition,
+  isNamespaceVariableDefinition,
+  isPropertyDefinition,
+  isValueDefinition,
+} from "./namespace/definition.ts";
 import { NamespaceTypeData, Type } from "../typeProcessor/type.ts";
-import { DFCodeblockName, DFRank, dfTypeToTC, DFValueType, DICT_LENGTH_LIMIT, LIST_LENGTH_LIMIT, STRING_LENGTH_LIMIT, TC_HEADER, tcTypeToDFParamType } from "../df/constants.ts";
+import {
+  DFCodeblockName,
+  DFRank,
+  dfTypeToTC,
+  DFValueType,
+  DICT_LENGTH_LIMIT,
+  LIST_LENGTH_LIMIT,
+  STRING_LENGTH_LIMIT,
+  TC_HEADER,
+  tcTypeToDFParamType,
+} from "../df/constants.ts";
 import { CodeOptimizer } from "./optimizer/optimizer.ts";
 import { count, warn } from "node:console";
-import { FILTER_ACTIONS, REPEAT_ACTIONS, SELECT_ACTIONS } from "./namespace/builtins.ts";
+import {
+  FILTER_ACTIONS,
+  REPEAT_ACTIONS,
+  SELECT_ACTIONS,
+} from "./namespace/builtins.ts";
 import { isForLoopActionCall } from "../util/astUtils.ts";
 import { PCodeParser } from "../pcode/pcodeParser.ts";
-import { SegmentPCode } from "../pcode/pcode.ts";
+import { SegmentPCode, VarPCode } from "../pcode/pcode.ts";
 import { BooleanOperation } from "./booleanOperation.ts";
 import { GLOBAL_SCOPE_INJECTIONS } from "./namespace/globalScopeInjections.ts";
-import { MAX_FUNCTION_PARAMS, SliceCodeLine, SPLIT_FAILED_ERROR_MESSAGE } from "./lineSplitter.ts";
+import {
+  MAX_FUNCTION_PARAMS,
+  SliceCodeLine,
+  SPLIT_FAILED_ERROR_MESSAGE,
+} from "./lineSplitter.ts";
 import { ItemLibrary } from "./itemLibrary.ts";
 import { isSNBTValid } from "../util/snbtUtils.ts";
 import { INVERTIBLE_SELECT_ACTIONS, KEYWORDS } from "../data/constants.ts";
 import { getImprovedErrorNode } from "../error/errorUtils.ts";
-import { isSourceNamespaceVariableDefinition, SourceNamespace } from "./namespace/sourceNamespace.ts";
+import {
+  getSourceNamespaceMemberBackendName,
+  getSourceNamespaceRuntimeFunctionMembers,
+  isSourceNamespaceVariableDefinition,
+  SourceNamespace,
+} from "./namespace/sourceNamespace.ts";
 import { COMPILE_START_PROCESS } from "./namespace/compileCallFunction.ts";
 
-export type EventType = DFCodeblockName.PLAYER_EVENT | DFCodeblockName.ENTITY_EVENT | DFCodeblockName.GAME_EVENT;
-export type UserMethodType = DFCodeblockName.FUNCTION | DFCodeblockName.PROCESS; 
+export type EventType =
+  | DFCodeblockName.PLAYER_EVENT
+  | DFCodeblockName.ENTITY_EVENT
+  | DFCodeblockName.GAME_EVENT;
+export type UserMethodType = DFCodeblockName.FUNCTION | DFCodeblockName.PROCESS;
 
 export type HeaderType = EventType | UserMethodType;
 
 export type CompliationEnvironment = {
-    types: TypeProcessor, 
-    rank: DFRank,
-    getItemLibraries: () => {[id: string]: ItemLibrary},
-    optimizationsEnabled: boolean,
+  types: TypeProcessor;
+  rank: DFRank;
+  getItemLibraries: () => { [id: string]: ItemLibrary };
+  optimizationsEnabled: boolean;
 };
 export type EvaluationContext = {
-    tvp: TempVarProvider,
-    types: TypeProcessor,
-    rank: DFRank,
-    compiler: CodeCompiler,
-    perSelectedMode: boolean,
-    getItemLibraries: () => {[id: string]: ItemLibrary},
-    reportError: (node: ASTNode, message: string, gateValue?: CodeValue) => void,
-}
+  tvp: TempVarProvider;
+  types: TypeProcessor;
+  rank: DFRank;
+  compiler: CodeCompiler;
+  perSelectedMode: boolean;
+  getItemLibraries: () => { [id: string]: ItemLibrary };
+  reportError: (node: ASTNode, message: string, gateValue?: CodeValue) => void;
+};
 
 type StatementContext = {
-    lineStatement: FunctionStatement | EventStatement;
-    lineEntry: CodeLineEntry;
-    perSelectedMode?: boolean;
-}
+  lineStatement: FunctionStatement | EventStatement;
+  lineEntry: CodeLineEntry;
+  perSelectedMode?: boolean;
+};
 type ExpressionContext = {
-    /** If present, compile temp vars with %uuid on the end */
-    perSelectedMode?: boolean
-}
+  /** If present, compile temp vars with %uuid on the end */
+  perSelectedMode?: boolean;
+};
 
 function jsonize(line: CodeBlock[]): string {
-    return JSON.stringify({blocks: line.map(b => b.templateForm())});
+  return JSON.stringify({ blocks: line.map((b) => b.templateForm()) });
 }
 
 //stolen from the old version of terracotta which stole it from a previous project of mine which probably stole it from somewhere else
 function gzipize(json: string): string {
-    const uint8ToBase64 = (arr) => btoa(
-        Array(arr.length)
-            .fill('')
-            .map((_, i) => String.fromCharCode(arr[i]))
-            .join('')
+  const uint8ToBase64 = (arr) =>
+    btoa(
+      Array(arr.length)
+        .fill("")
+        .map((_, i) => String.fromCharCode(arr[i]))
+        .join(""),
     );
 
-    var enc = new TextEncoder()
-    const output = fflate.gzipSync(enc.encode(json), { level: 9, mtime: 0});
+  var enc = new TextEncoder();
+  const output = fflate.gzipSync(enc.encode(json), { level: 9, mtime: 0 });
 
-    return uint8ToBase64(output)
+  return uint8ToBase64(output);
 }
 
-export const tcEventToDf: Map<DFCodeblockName, {[tcName: string]: string}> = new Map();
-for (const eventType of [DFCodeblockName.PLAYER_EVENT, DFCodeblockName.ENTITY_EVENT, DFCodeblockName.GAME_EVENT]) {
-    let entries = {};
-    tcEventToDf.set(eventType,entries);
-    for (const action of Object.values(AD.actions.get(eventType)!)) {
-        if (action.isLegacy) continue;
-        entries[AD.getTCActionName(eventType, action.name)] = action.name;
-    }
+export const tcEventToDf: Map<DFCodeblockName, { [tcName: string]: string }> =
+  new Map();
+for (
+  const eventType of [
+    DFCodeblockName.PLAYER_EVENT,
+    DFCodeblockName.ENTITY_EVENT,
+    DFCodeblockName.GAME_EVENT,
+  ]
+) {
+  let entries = {};
+  tcEventToDf.set(eventType, entries);
+  for (const action of Object.values(AD.actions.get(eventType)!)) {
+    if (action.isLegacy) continue;
+    entries[AD.getTCActionName(eventType, action.name)] = action.name;
+  }
 }
 
 export type CodeLineEntry = {
-    headerType: HeaderType,
-    name: string,
-    headerBlock: CodeBlock | null,
-    /** Will be `null` for codelines that don't support return types (anything other than FUNCTION) */
-    returnTypes: Type[] | null,
-    code: CodeBlock[][]
-}
+  headerType: HeaderType;
+  name: string;
+  headerBlock: CodeBlock | null;
+  /** Will be `null` for codelines that don't support return types (anything other than FUNCTION) */
+  returnTypes: Type[] | null;
+  code: CodeBlock[][];
+};
 
 export class CodeCompiler {
-    codeLines: Map<HeaderType, {[name: string]: CodeLineEntry}> = new Map();
-    errors: TCError[] = [];
+  codeLines: Map<HeaderType, { [name: string]: CodeLineEntry }> = new Map();
+  errors: TCError[] = [];
 
-    readonly tempVarProvider = new TempVarProvider();
-    readonly perSelectedTempVarProvider = new TempVarProvider("%uuid");
-    private pcodeParser = new PCodeParser();
+  readonly tempVarProvider = new TempVarProvider();
+  readonly perSelectedTempVarProvider = new TempVarProvider("%uuid");
+  private pcodeParser = new PCodeParser();
 
-    constructor(
-        public ast: Statement[],
-        public env: CompliationEnvironment,
-    ) {}
+  constructor(
+    public ast: Statement[],
+    public env: CompliationEnvironment,
+  ) {}
 
-    getEvaluationContext(perSelectedMode: boolean = false): EvaluationContext {
-        return {
-            tvp: perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider,
-            types: this.env.types,
-            rank: this.env.rank,
-            compiler: this,
-            perSelectedMode,
-            getItemLibraries: this.env.getItemLibraries,
-            reportError: this.reportError,
-        }
+  getEvaluationContext(perSelectedMode: boolean = false): EvaluationContext {
+    return {
+      tvp: perSelectedMode
+        ? this.perSelectedTempVarProvider
+        : this.tempVarProvider,
+      types: this.env.types,
+      rank: this.env.rank,
+      compiler: this,
+      perSelectedMode,
+      getItemLibraries: this.env.getItemLibraries,
+      reportError: this.reportError,
+    };
+  }
+
+  /** @param gateValue If gateValue is a MissingValue, this error will not be reported */
+  reportError = (node: ASTNode, message: string, gateValue?: CodeValue) => {
+    if (gateValue && gateValue instanceof MissingValue) return;
+    this.errors.push(
+      new TCNodeError(
+        node,
+        ErrorType.COMPILER,
+        message,
+      ),
+    );
+  };
+
+  /**
+   * Returns the codeline entry for given header type and name
+   * Will create the entry if it doesn't exist
+   */
+  getLineEntry(headerType: HeaderType, name: string): CodeLineEntry {
+    let entries = getOrCreateMapLayer(this.codeLines, headerType, {});
+    let headerBlockConstructor = headerType == DFCodeblockName.PROCESS ||
+        headerType == DFCodeblockName.FUNCTION
+      ? ActionBlock
+      : EventBlock;
+    return getOrCreateDictLayer<CodeLineEntry>(entries, name, {
+      headerType,
+      name,
+      headerBlock: new headerBlockConstructor(headerType, { action: name }),
+      returnTypes: null,
+      code: [],
+    });
+  }
+
+  private airItemCreated: boolean = false;
+  /**
+   * Will return a variable that's set to an item stack with material "air"
+   *
+   * The first time this is called, the initializer blocks for said variable will be added to gameevent startup
+   */
+  getAirItem() {
+    let varName = `${TC_HEADER}AIR`;
+    if (!this.airItemCreated) {
+      let entry = this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup");
+      entry.code.unshift([
+        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "SetItemType",
+          args: [
+            new VariableValue(varName, VariableScope.GLOBAL, Type.item),
+            new StringValue("air"),
+          ],
+        }),
+      ]);
+      this.airItemCreated = true;
     }
+    return new VariableValue(varName, VariableScope.GLOBAL, Type.item);
+  }
 
-    /** @param gateValue If gateValue is a MissingValue, this error will not be reported */
-    reportError = (node: ASTNode, message: string, gateValue?: CodeValue) => {
-        if (gateValue && gateValue instanceof MissingValue) return;
-        this.errors.push(new TCNodeError(
-            node,
-            ErrorType.COMPILER,
-            message
-        ));
-    }
-
-    /**
-     * Returns the codeline entry for given header type and name
-     * Will create the entry if it doesn't exist
-     */
-    getLineEntry(headerType: HeaderType, name: string): CodeLineEntry {
-        let entries = getOrCreateMapLayer(this.codeLines, headerType, {});
-        let headerBlockConstructor = (headerType == DFCodeblockName.PROCESS || headerType == DFCodeblockName.FUNCTION ? ActionBlock : EventBlock);
-        return getOrCreateDictLayer<CodeLineEntry>(entries, name, {
-            headerType,
-            name,
-            headerBlock: new headerBlockConstructor(headerType, {action: name}),
-            returnTypes: null,
-            code: []
-        })
-    }
-
-    private airItemCreated: boolean = false;
-    /**
-     * Will return a variable that's set to an item stack with material "air"
-     * 
-     * The first time this is called, the initializer blocks for said variable will be added to gameevent startup
-     */
-    getAirItem() {
-        let varName = `${TC_HEADER}AIR`;
-        if (!this.airItemCreated) {
-            let entry = this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup");
-            entry.code.unshift([
-                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                    action: "SetItemType",
-                    args: [new VariableValue(varName, VariableScope.GLOBAL, Type.item), new StringValue("air")]
-                })
-            ]);
-            this.airItemCreated = true;
-        }
-        return new VariableValue(varName, VariableScope.GLOBAL, Type.item);
-    }
-
-    shadowingCheck(node: VariableExpression | Token, thingString: string = "Variable") {
-        let name = node instanceof VariableExpression ? node.name : node;
-        if (name.type == TokenType.IDENTIFIER) {
-            if (KEYWORDS.includes(name.value)) {
-                this.reportError(
-                    name, 
-                    `${thingString} name '${name.value}' conflicts with a built-in keyword of the same name. This can cause glitchy or undefined behavior and is generally not advisable.`
-                    +`\nBehavior regarding conflicts like this may change in future updates without warning.`
-                    +`\n\nWrap the ${thingString.toLowerCase()}'s name in quotes if this is intentional.`,
-                );
-            }
-            
-            if (name.value in Namespace.registry) {
-                this.reportError(
-                    name, 
-                    `${thingString} name '${name.value}' shadows a built-in namespace of the same name. The normal, original behavior of '${name.value}' will be inaccessible anywhere this ${thingString.toLowerCase()} is in scope.`
-                    +`\nBehavior regarding shadowing like this may change in future updates without warning.`
-                    +`\n\nWrap the ${thingString.toLowerCase()}'s name in quotes if this is intentional.`,
-                );
-                return;
-            }
-        }
-    }
-
-    /** Returns an array of statements which need to be compiled */
-    processLineDeclarations(statements: Statement[]): [lineEntry: CodeLineEntry, statement: Statement][] {
-        let declarationsToCompile: [CodeLineEntry, Statement][] = [];
-
-        // used for throwing errors when having duplicate declarations
-        let statementMap: Map<HeaderType, Map<string, Statement[]>> = new Map();
-
-        for (const s of statements) {
-            let lineEntry: CodeLineEntry;
-
-            if (s instanceof EventStatement) {
-                let headerType: HeaderType = DFCodeblockName[TokenType[s.type.type]];
-                let tcEvent = s.eventName.value;
-
-                let dfEvent = tcEventToDf.get(headerType)?.[tcEvent];
-                if (dfEvent == undefined) {
-                    this.reportError(
-                        s.eventName,
-                        `Invalid ${headerType.toLowerCase()} '${tcEvent}'`
-                    );
-                    dfEvent = `$ERROR$ ${tcEvent}`;
-                }
-
-                let adAction = AD.actions.get(headerType)?.[dfEvent]!;
-
-                // rank check
-                if (!AD.rankCheck(this.env.rank, adAction?.requiresRank)) {
-                    this.reportError(
-                        s.eventName, 
-                        `${toNameCase(headerType)} '${tcEvent}' requires ${toNameCase(adAction.requiresRank)} rank, compiler is set to ${toNameCase(this.env.rank || "unranked")}`
-                    );
-                }
-
-                lineEntry = this.getLineEntry(headerType, dfEvent);
-
-                let lsCancel = false;
-                for (const m of s.modifiers) {
-                    if (m.type == TokenType.LAGSLAYER_CANCEL) {
-                        lsCancel = true;
-                    
-                        if (adAction && !adAction.cancellable) {
-                            this.reportError(
-                                m,
-                                `${toNameCase(headerType)} '${tcEvent}' cannot be cancelled automatically`
-                            );
-                        }
-                    }
-                }
-
-                statementMap.getOrInsert(s.headerType,new Map()).getOrInsert(tcEvent,[]).push(s);
-                lineEntry.headerBlock = new EventBlock(headerType, {action: dfEvent, lsCancel: lsCancel, astNode: s});
-            }
-            else if (s instanceof TypeStatement) {
-                continue;
-            }
-            else if (s instanceof ExtendStatement) {
-                if (!(s.chunk instanceof ChunkExpression)) continue;
-                let targetType = this.env.types.evaluateExplicitType(s.type);
-                let functions: FunctionStatement[] = [];
-                for (const inner of s.chunk.statements) {
-                    if (inner instanceof FunctionStatement) {
-                        inner.backendName = inner.backendName ?? getExtensionFunctionBackendName(targetType.name, inner.name.value);
-                        functions.push(inner);
-                    } else {
-                        this.reportError(inner, `Only function declarations are allowed inside extend blocks`);
-                    }
-                }
-                declarationsToCompile.push(...this.processLineDeclarations(functions));
-                continue;
-            }
-            else if (s instanceof FunctionStatement) {
-                let headerType: HeaderType = DFCodeblockName[TokenType[s.keyword.type]];
-                let headerName = s.backendName ?? s.name.value;
-                // TODO: warning for trying to include pcodes in name
-
-                if (s.backendName == null) this.shadowingCheck(s.name, "Function");
-                
-                let parameters: ParameterValue[] = [];
-                if (s.params) {
-                    let seenNames: Set<string> = new Set();
-                    let hasSeenPluralAny = false;
-                    for (const param of s.params.elements) {
-                        this.shadowingCheck(param.name,"Parameter");
-
-                        if (seenNames.has(param.name.value)) {
-                            this.reportError(
-                                param,
-                                `Duplicate parameter '${param.name.value}'`
-                            );
-                            continue;
-                        }
-                        seenNames.add(param.name.value);
-
-                        let dfType: string = "any";
-                        let tcType: Type | null = null;
-                        if (param.assignedType) {
-                            tcType = this.env.types.evaluateExplicitType(param.assignedType.type);
-                            let runtimeType = tcType.getRuntimeType();
-                            if (runtimeType.name in tcTypeToDFParamType) {
-                                dfType = tcTypeToDFParamType[runtimeType.name];
-                            } else {
-                                this.reportError(
-                                    param.assignedType.type,
-                                    `Type '${tcType.name}' cannot be passed to functions`
-                                );
-                            }
-                        }
-
-                        let plural = param.ellipses != null;
-                        let optional = param.optionalMarker != null;
-                        let defaultValue: TangibleValue | null = null;
-
-                        if (param.defaultValue) {
-                            // TODO: maybe allow default values which produce codeblocks by initializing them in the func body
-                            // this is tricky since you need a default which represents "undefined" and you can't just use 0
-                            // since what if the user passes that in
-                            let [item, code] = this.compileExpression(param.defaultValue, {});
-                            if (item instanceof TangibleValue) {
-                                defaultValue = item;
-                            }
-                            
-                            if (plural) {
-                                this.reportError(param.defaultValue, `Plural parameters cannot specify default values`);
-                            } else {
-                                optional = true;
-                            }
-                            
-                            if (tcType && (tcType.matches(Type.list) || tcType.matches(Type.dict) || tcType.matches(Type.var))) {
-                                this.reportError(param.defaultValue, `Parameters of type '${tcType?.name}' cannot be assigned default values`);
-                            } else if (tcType && !tcType.matches(Type.any) && !(item.getType(this.env.types).strictlyMatches(tcType))) {
-                                this.reportError(param.defaultValue, `Default value type does not match stated parameter type`)
-                            } else if (code.length != 0) {
-                                this.reportError(param.defaultValue, `Parameter default value cannot produce codeblocks`);
-                            }
-                        }
-
-                        if (tcType && tcType.matches(Type.var)) {
-                            if (optional) this.reportError(param, `Variable parameters cannot be optional`);
-                            if (plural) this.reportError(param, `Variable parameters cannot be plural`);
-                        }
-
-                        if (hasSeenPluralAny) {
-                            this.reportError(param, `Functions cannot have any more parameters after a plural parameter of type 'any' (this parameter would be completely inaccessible)`);
-                        } else if (plural && tcType?.matches(Type.any)) {
-                            hasSeenPluralAny = true;
-                        }
-
-                        parameters.push(new ParameterValue(
-                            param.name.value,
-                            dfType,
-                            plural,
-                            optional,
-                            defaultValue,
-                            param
-                        ))
-                    }
-                }
-
-                let tcReturnTypes: Type[] = [];
-                if (s.returnType) {
-                    if (s.keyword.type == TokenType.FUNCTION) {
-                        // handle all other return types
-                        for (let i = 0; i < s.returnType.types.length; i++) {
-                            let typeExpr = s.returnType.types[i];
-                            let type = this.env.types.evaluateExplicitType(typeExpr);
-
-                            if (type.matches(Type.void)) {
-                                if (s.returnType.types.length > 1) {
-                                    this.reportError(
-                                        typeExpr,
-                                        `Functions returning multiple values cannot return 'void'`
-                                    );
-                                }
-                                continue;
-                            }
-
-                            tcReturnTypes.push(type);
-                            let runtimeType = type.getRuntimeType();
-                            if (runtimeType.name in tcTypeToDFParamType) {
-                                parameters.splice(i, 0, new ParameterValue(
-                                    `@__TC_RET_${i}`, 
-                                    "var", 
-                                    false, false, 
-                                    null, 
-                                    typeExpr
-                                ));
-                            } else {
-                                this.reportError(
-                                    typeExpr,
-                                    `Type '${type.name}' cannot be returned from functions`
-                                );
-                            }
-                        }
-                    } else {
-                        this.reportError(s.returnType, "Processes cannot return values");
-                    }
-                }
-
-                if (parameters.length > MAX_FUNCTION_PARAMS) {
-                    this.reportError(s.name,
-                        s.returnType 
-                        ? `Total number of parameters + total number of return values cannot exceed ${MAX_FUNCTION_PARAMS}.`
-                        : `Total number of parameters cannot exceed ${MAX_FUNCTION_PARAMS}`
-                    );
-                }
-                
-                lineEntry = this.getLineEntry(headerType, headerName);
-                if (headerType == DFCodeblockName.FUNCTION) lineEntry.returnTypes = tcReturnTypes;
-                statementMap.getOrInsert(s.headerType, new Map()).getOrInsert(headerName,[]).push(s);
-                lineEntry.headerBlock = new ActionBlock(s.headerType, {
-                    action: headerName,
-                    args: parameters
-                })
-            }
-            else if (s instanceof DeclareStatement) {
-                this.validateDeclareStatement(s, false);
-                continue;
-            }
-            else if (s instanceof ExpressionStatement && s.expression instanceof VariableExpression) {
-                continue;
-            }
-            else {
-                this.reportError(s, "This kind of statement can only be placed in an event, function, or process");
-                continue;
-            }
-
-            declarationsToCompile.push([lineEntry, s]);
-        }
-
-        // errors for duplicate definitions
-        for (const [headerType, declarations] of statementMap.entries()) {
-            for (const [name, statements] of declarations.entries()) {
-                if (statements.length <= 1) continue;
-                for (const statement of statements) {
-                    this.reportError(
-                        statement instanceof EventStatement ? statement.eventName 
-                        : statement instanceof FunctionStatement ? statement.name
-                        : statement,
-                        `${toNameCase(headerType)} '${name}' declared in multiple places`
-                    );
-                }
-            } 
-        }
-
-        return declarationsToCompile;
-    }
-
-    compileArgsList(argsList: ListExpression, context: ExpressionContext, compileNamedArgs: boolean = true): [args: CodeValue[], namedArgs: Map<AtomicExpression, [CodeValue, Expression]>, argCode: CodeBlock[]] {
-        let args: CodeValue[] = [];
-        let namedArgs: Map<AtomicExpression, [CodeValue, Expression]> = new Map();
-        let argCode: CodeBlock[] = [];
-        let seenNames: {[name: string]: true} = {};
-        for (const argNode of argsList.elements) {
-            //named arg
-            if (argNode instanceof BinaryExpression && argNode.operator.type == TokenType.EQUALS) {
-                let name = argNode.left;
-                if (!(name instanceof AtomicExpression && (name.token.type == TokenType.IDENTIFIER || name.token.type == TokenType.STRING_LITERAL))) {
-                    this.reportError(
-                        name,
-                        `Argument name must be an identifier or string literal`
-                    );
-                    continue;
-                }
-                if (name.token.value in seenNames) {
-                    this.reportError(
-                        argNode,
-                        `Argument '${name.token.value}' provided in multiple places`
-                    );
-                    continue;
-                }
-
-                seenNames[name.token.value] = true;
-
-                if (compileNamedArgs) {
-                    let [value, code] = this.compileExpression(argNode.right, context);
-                    namedArgs.set(name, [value, argNode.right]);
-                    argCode.push(...code);
-                } else {
-                    namedArgs.set(name, [new EmptyValue(argNode.right), argNode.right]);
-                }
-            } 
-            //normal arg
-            else {
-                let [value, code] = this.compileExpression(argNode, context);
-                args.push(value)
-                argCode.push(...code);
-            }
-            
-        }
-        return [args, namedArgs, argCode];
-    }
-
-    compileListContents(tempVar: VariableValue, contents: TangibleValue[]): CodeBlock[] {
-        let code: CodeBlock[] = [];
-        let currentChest: TangibleValue[] = [tempVar];
-        let createBlockAdded = false;
-
-        function pushCurrentChest() {
-            if (currentChest.length <= 1 && code.length > 1) return;
-            code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                action: !createBlockAdded ? "CreateList" : "AppendValue",
-                args: [...currentChest]
-            }));
-            if (!createBlockAdded) createBlockAdded = true;
-            currentChest = [tempVar]; 
-        }
-
-        for (const element of contents) {
-            currentChest.push(element);
-            if (currentChest.length >= 27) {
-                pushCurrentChest();
-            }
-        }
-        pushCurrentChest();
-        return code;
-    }
-
-    compileCallExpression(e: CallExpression | CallOrStartExpression, definition: FunctionDefinition, context: ExpressionContext, extraInfo: FunctionCallExtraInfo = {}): [CodeValue, CodeBlock[]] {
-        if (
-            (extraInfo.methodCallOf instanceof VariableValue && extraInfo.methodCallOf.isTempVar)
-            || (extraInfo.methodCallOf instanceof GameValueValue)
-        ) {
-            for (const sig of definition.signatures) {
-                if (sig.params.length > 0 && sig.params[0].type.matches(Type.var)) {
-                    this.reportError(getImprovedErrorNode(e),"Methods which expect a reference cannot be called here");
-                    break;
-                }
-            }
-        }
-
-        let [args, namedArgs, argCode] = this.compileArgsList(e.args, context, !definition.manuallyCompilesNamedArgs);
-
-        if (definition.action) {
-            let tagCount = Object.keys(definition.action.tags).length;
-            if (args.length + tagCount > 27) {
-                this.reportError(e.args, `This call cannot pass more than ${27-tagCount} arguments, ${args.length} were provided.`);
-            }
-        }
-
-        let [value, code] = definition.compile(args,namedArgs, this.getEvaluationContext(context.perSelectedMode), e, extraInfo);
-        value.astNode = e;
-        return [value, [...argCode, ...code]];
-    }
-
-    /** Source namespace processes require explicit `start` syntax. */
-    private isProcessFunctionDefinition(definition: FunctionDefinition): boolean {
-        return (
-            definition.compile == COMPILE_START_PROCESS
-            || definition.astNode?.headerType == DFCodeblockName.PROCESS
+  shadowingCheck(
+    node: VariableExpression | Token,
+    thingString: string = "Variable",
+  ) {
+    let name = node instanceof VariableExpression ? node.name : node;
+    if (name.type == TokenType.IDENTIFIER) {
+      if (KEYWORDS.includes(name.value)) {
+        this.reportError(
+          name,
+          `${thingString} name '${name.value}' conflicts with a built-in keyword of the same name. This can cause glitchy or undefined behavior and is generally not advisable.` +
+            `\nBehavior regarding conflicts like this may change in future updates without warning.` +
+            `\n\nWrap the ${thingString.toLowerCase()}'s name in quotes if this is intentional.`,
         );
+      }
+
+      if (name.value in Namespace.registry) {
+        this.reportError(
+          name,
+          `${thingString} name '${name.value}' shadows a built-in namespace of the same name. The normal, original behavior of '${name.value}' will be inaccessible anywhere this ${thingString.toLowerCase()} is in scope.` +
+            `\nBehavior regarding shadowing like this may change in future updates without warning.` +
+            `\n\nWrap the ${thingString.toLowerCase()}'s name in quotes if this is intentional.`,
+        );
+        return;
+      }
+    }
+  }
+
+  /** Returns an array of statements which need to be compiled */
+  processLineDeclarations(
+    statements: Statement[],
+  ): [lineEntry: CodeLineEntry, statement: Statement][] {
+    let declarationsToCompile: [CodeLineEntry, Statement][] = [];
+
+    // used for throwing errors when having duplicate declarations
+    let statementMap: Map<HeaderType, Map<string, Statement[]>> = new Map();
+
+    for (const s of statements) {
+      let lineEntry: CodeLineEntry;
+
+      if (s instanceof EventStatement) {
+        let headerType: HeaderType = DFCodeblockName[TokenType[s.type.type]];
+        let tcEvent = s.eventName.value;
+
+        let dfEvent = tcEventToDf.get(headerType)?.[tcEvent];
+        if (dfEvent == undefined) {
+          this.reportError(
+            s.eventName,
+            `Invalid ${headerType.toLowerCase()} '${tcEvent}'`,
+          );
+          dfEvent = `$ERROR$ ${tcEvent}`;
+        }
+
+        let adAction = AD.actions.get(headerType)?.[dfEvent]!;
+
+        // rank check
+        if (!AD.rankCheck(this.env.rank, adAction?.requiresRank)) {
+          this.reportError(
+            s.eventName,
+            `${toNameCase(headerType)} '${tcEvent}' requires ${
+              toNameCase(adAction.requiresRank)
+            } rank, compiler is set to ${
+              toNameCase(this.env.rank || "unranked")
+            }`,
+          );
+        }
+
+        lineEntry = this.getLineEntry(headerType, dfEvent);
+
+        let lsCancel = false;
+        for (const m of s.modifiers) {
+          if (m.type == TokenType.LAGSLAYER_CANCEL) {
+            lsCancel = true;
+
+            if (adAction && !adAction.cancellable) {
+              this.reportError(
+                m,
+                `${
+                  toNameCase(headerType)
+                } '${tcEvent}' cannot be cancelled automatically`,
+              );
+            }
+          }
+        }
+
+        statementMap.getOrInsert(s.headerType, new Map()).getOrInsert(
+          tcEvent,
+          [],
+        ).push(s);
+        lineEntry.headerBlock = new EventBlock(headerType, {
+          action: dfEvent,
+          lsCancel: lsCancel,
+          astNode: s,
+        });
+      } else if (s instanceof TypeStatement) {
+        continue;
+      } else if (s instanceof ExtendStatement) {
+        if (!(s.chunk instanceof ChunkExpression)) continue;
+        let targetType = this.env.types.evaluateExplicitType(s.type);
+        let functions: FunctionStatement[] = [];
+        for (const inner of s.chunk.statements) {
+          if (inner instanceof FunctionStatement) {
+            inner.backendName = inner.backendName ??
+              getExtensionFunctionBackendName(
+                targetType.name,
+                inner.name.value,
+              );
+            functions.push(inner);
+          } else {
+            this.reportError(
+              inner,
+              `Only function declarations are allowed inside extend blocks`,
+            );
+          }
+        }
+        declarationsToCompile.push(...this.processLineDeclarations(functions));
+        continue;
+      } else if (s instanceof FunctionStatement) {
+        let headerType: HeaderType = DFCodeblockName[TokenType[s.keyword.type]];
+        let headerName = s.backendName ?? s.name.value;
+        // TODO: warning for trying to include pcodes in name
+
+        if (s.backendName == null) this.shadowingCheck(s.name, "Function");
+
+        let parameters: ParameterValue[] = [];
+        if (s.params) {
+          let seenNames: Set<string> = new Set();
+          let hasSeenPluralAny = false;
+          for (const param of s.params.elements) {
+            this.shadowingCheck(param.name, "Parameter");
+
+            if (seenNames.has(param.name.value)) {
+              this.reportError(
+                param,
+                `Duplicate parameter '${param.name.value}'`,
+              );
+              continue;
+            }
+            seenNames.add(param.name.value);
+
+            let dfType: string = "any";
+            let tcType: Type | null = null;
+            if (param.assignedType) {
+              tcType = this.env.types.evaluateExplicitType(
+                param.assignedType.type,
+              );
+              let runtimeType = tcType.getRuntimeType();
+              if (runtimeType.name in tcTypeToDFParamType) {
+                dfType = tcTypeToDFParamType[runtimeType.name];
+              } else {
+                this.reportError(
+                  param.assignedType.type,
+                  `Type '${tcType.name}' cannot be passed to functions`,
+                );
+              }
+            }
+
+            let plural = param.ellipses != null;
+            let optional = param.optionalMarker != null;
+            let defaultValue: TangibleValue | null = null;
+
+            if (param.defaultValue) {
+              // TODO: maybe allow default values which produce codeblocks by initializing them in the func body
+              // this is tricky since you need a default which represents "undefined" and you can't just use 0
+              // since what if the user passes that in
+              let [item, code] = this.compileExpression(param.defaultValue, {});
+              if (item instanceof TangibleValue) {
+                defaultValue = item;
+              }
+
+              if (plural) {
+                this.reportError(
+                  param.defaultValue,
+                  `Plural parameters cannot specify default values`,
+                );
+              } else {
+                optional = true;
+              }
+
+              if (
+                tcType &&
+                (tcType.matches(Type.list) || tcType.matches(Type.dict) ||
+                  tcType.matches(Type.var))
+              ) {
+                this.reportError(
+                  param.defaultValue,
+                  `Parameters of type '${tcType?.name}' cannot be assigned default values`,
+                );
+              } else if (
+                tcType && !tcType.matches(Type.any) &&
+                !(item.getType(this.env.types).strictlyMatches(tcType))
+              ) {
+                this.reportError(
+                  param.defaultValue,
+                  `Default value type does not match stated parameter type`,
+                );
+              } else if (code.length != 0) {
+                this.reportError(
+                  param.defaultValue,
+                  `Parameter default value cannot produce codeblocks`,
+                );
+              }
+            }
+
+            if (tcType && tcType.matches(Type.var)) {
+              if (optional) {
+                this.reportError(
+                  param,
+                  `Variable parameters cannot be optional`,
+                );
+              }
+              if (plural) {
+                this.reportError(param, `Variable parameters cannot be plural`);
+              }
+            }
+
+            if (hasSeenPluralAny) {
+              this.reportError(
+                param,
+                `Functions cannot have any more parameters after a plural parameter of type 'any' (this parameter would be completely inaccessible)`,
+              );
+            } else if (plural && tcType?.matches(Type.any)) {
+              hasSeenPluralAny = true;
+            }
+
+            parameters.push(
+              new ParameterValue(
+                param.name.value,
+                dfType,
+                plural,
+                optional,
+                defaultValue,
+                param,
+              ),
+            );
+          }
+        }
+
+        let tcReturnTypes: Type[] = [];
+        if (s.returnType) {
+          if (s.keyword.type == TokenType.FUNCTION) {
+            // handle all other return types
+            for (let i = 0; i < s.returnType.types.length; i++) {
+              let typeExpr = s.returnType.types[i];
+              let type = this.env.types.evaluateExplicitType(typeExpr);
+
+              if (type.matches(Type.void)) {
+                if (s.returnType.types.length > 1) {
+                  this.reportError(
+                    typeExpr,
+                    `Functions returning multiple values cannot return 'void'`,
+                  );
+                }
+                continue;
+              }
+
+              tcReturnTypes.push(type);
+              let runtimeType = type.getRuntimeType();
+              if (runtimeType.name in tcTypeToDFParamType) {
+                parameters.splice(
+                  i,
+                  0,
+                  new ParameterValue(
+                    `@__TC_RET_${i}`,
+                    "var",
+                    false,
+                    false,
+                    null,
+                    typeExpr,
+                  ),
+                );
+              } else {
+                this.reportError(
+                  typeExpr,
+                  `Type '${type.name}' cannot be returned from functions`,
+                );
+              }
+            }
+          } else {
+            this.reportError(s.returnType, "Processes cannot return values");
+          }
+        }
+
+        if (parameters.length > MAX_FUNCTION_PARAMS) {
+          this.reportError(
+            s.name,
+            s.returnType
+              ? `Total number of parameters + total number of return values cannot exceed ${MAX_FUNCTION_PARAMS}.`
+              : `Total number of parameters cannot exceed ${MAX_FUNCTION_PARAMS}`,
+          );
+        }
+
+        lineEntry = this.getLineEntry(headerType, headerName);
+        if (headerType == DFCodeblockName.FUNCTION) {
+          lineEntry.returnTypes = tcReturnTypes;
+        }
+        statementMap.getOrInsert(s.headerType, new Map()).getOrInsert(
+          headerName,
+          [],
+        ).push(s);
+        lineEntry.headerBlock = new ActionBlock(s.headerType, {
+          action: headerName,
+          args: parameters,
+        });
+      } else if (s instanceof DeclareStatement) {
+        this.validateDeclareStatement(s, false);
+        continue;
+      } else if (
+        s instanceof ExpressionStatement &&
+        s.expression instanceof VariableExpression
+      ) {
+        continue;
+      } else {
+        this.reportError(
+          s,
+          "This kind of statement can only be placed in an event, function, or process",
+        );
+        continue;
+      }
+
+      declarationsToCompile.push([lineEntry, s]);
     }
 
-    /** 
-     * ASSUMES A SIMPLIFIED `BooleanOperation` IS BEING PASSED IN!!
-     *  
-     * PASSING IN A BOOLEAN OPERATION TREE WITH STACKED NEGATIONS WILL BREAK THINGS!
-     * */
-    compileBooleanOperation(e: BooleanOperation | Expression, body: CodeBlock[], context: ExpressionContext): CodeBlock[] {
-        let invert = false;
-        if (e instanceof BooleanOperation) {
-            switch (e.operation) {
-                case TokenType.BOOL_AND: {
-                    return this.compileBooleanOperation(e.a, this.compileBooleanOperation(e.b!, body, context), context);
-                }
-                // TODO: optimize cases where you don't need an actual structural or (like val == 1 || val == 2)
-                case TokenType.BOOL_OR: {
-                    // BOOLEAN EXPRESSION CASE:
-                    // if a IS a boolean expression, we can't rely on built-in if-else since
-                    // a cannot be put into that if.
-                    // therefore we need to keep track of whether or not a is true after it's
-                    // evaluated so we can simulate an else block
-                    if (e.a instanceof BooleanOperation) {
-                        /* 
+    // errors for duplicate definitions
+    for (const [headerType, declarations] of statementMap.entries()) {
+      for (const [name, statements] of declarations.entries()) {
+        if (statements.length <= 1) continue;
+        for (const statement of statements) {
+          this.reportError(
+            statement instanceof EventStatement
+              ? statement.eventName
+              : statement instanceof FunctionStatement
+              ? statement.name
+              : statement,
+            `${toNameCase(headerType)} '${name}' declared in multiple places`,
+          );
+        }
+      }
+    }
+
+    return declarationsToCompile;
+  }
+
+  compileArgsList(
+    argsList: ListExpression,
+    context: ExpressionContext,
+    compileNamedArgs: boolean = true,
+  ): [
+    args: CodeValue[],
+    namedArgs: Map<AtomicExpression, [CodeValue, Expression]>,
+    argCode: CodeBlock[],
+  ] {
+    let args: CodeValue[] = [];
+    let namedArgs: Map<AtomicExpression, [CodeValue, Expression]> = new Map();
+    let argCode: CodeBlock[] = [];
+    let seenNames: { [name: string]: true } = {};
+    for (const argNode of argsList.elements) {
+      //named arg
+      if (
+        argNode instanceof BinaryExpression &&
+        argNode.operator.type == TokenType.EQUALS
+      ) {
+        let name = argNode.left;
+        if (
+          !(name instanceof AtomicExpression &&
+            (name.token.type == TokenType.IDENTIFIER ||
+              name.token.type == TokenType.STRING_LITERAL))
+        ) {
+          this.reportError(
+            name,
+            `Argument name must be an identifier or string literal`,
+          );
+          continue;
+        }
+        if (name.token.value in seenNames) {
+          this.reportError(
+            argNode,
+            `Argument '${name.token.value}' provided in multiple places`,
+          );
+          continue;
+        }
+
+        seenNames[name.token.value] = true;
+
+        if (compileNamedArgs) {
+          let [value, code] = this.compileExpression(argNode.right, context);
+          namedArgs.set(name, [value, argNode.right]);
+          argCode.push(...code);
+        } else {
+          namedArgs.set(name, [new EmptyValue(argNode.right), argNode.right]);
+        }
+      } //normal arg
+      else {
+        let [value, code] = this.compileExpression(argNode, context);
+        args.push(value);
+        argCode.push(...code);
+      }
+    }
+    return [args, namedArgs, argCode];
+  }
+
+  compileListContents(
+    tempVar: VariableValue,
+    contents: TangibleValue[],
+  ): CodeBlock[] {
+    let code: CodeBlock[] = [];
+    let currentChest: TangibleValue[] = [tempVar];
+    let createBlockAdded = false;
+
+    function pushCurrentChest() {
+      if (currentChest.length <= 1 && code.length > 1) return;
+      code.push(
+        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: !createBlockAdded ? "CreateList" : "AppendValue",
+          args: [...currentChest],
+        }),
+      );
+      if (!createBlockAdded) createBlockAdded = true;
+      currentChest = [tempVar];
+    }
+
+    for (const element of contents) {
+      currentChest.push(element);
+      if (currentChest.length >= 27) {
+        pushCurrentChest();
+      }
+    }
+    pushCurrentChest();
+    return code;
+  }
+
+  compileCallExpression(
+    e: CallExpression | CallOrStartExpression,
+    definition: FunctionDefinition,
+    context: ExpressionContext,
+    extraInfo: FunctionCallExtraInfo = {},
+  ): [CodeValue, CodeBlock[]] {
+    if (
+      (extraInfo.methodCallOf instanceof VariableValue &&
+        extraInfo.methodCallOf.isTempVar) ||
+      (extraInfo.methodCallOf instanceof GameValueValue)
+    ) {
+      for (const sig of definition.signatures) {
+        if (sig.params.length > 0 && sig.params[0].type.matches(Type.var)) {
+          this.reportError(
+            getImprovedErrorNode(e),
+            "Methods which expect a reference cannot be called here",
+          );
+          break;
+        }
+      }
+    }
+
+    let [args, namedArgs, argCode] = this.compileArgsList(
+      e.args,
+      context,
+      !definition.manuallyCompilesNamedArgs,
+    );
+
+    if (definition.action) {
+      let tagCount = Object.keys(definition.action.tags).length;
+      if (args.length + tagCount > 27) {
+        this.reportError(
+          e.args,
+          `This call cannot pass more than ${
+            27 - tagCount
+          } arguments, ${args.length} were provided.`,
+        );
+      }
+    }
+
+    let [value, code] = definition.compile(
+      args,
+      namedArgs,
+      this.getEvaluationContext(context.perSelectedMode),
+      e,
+      extraInfo,
+    );
+    value.astNode = e;
+    return [value, [...argCode, ...code]];
+  }
+
+  /** Source namespace processes require explicit `start` syntax. */
+  private isProcessFunctionDefinition(definition: FunctionDefinition): boolean {
+    return (
+      definition.compile == COMPILE_START_PROCESS ||
+      definition.astNode?.headerType == DFCodeblockName.PROCESS
+    );
+  }
+
+  /**
+   * Namespace dictionaries store literal global-variable names, because DF
+   * copies dictionary values instead of retaining a reference to a variable.
+   * This creates the dynamic global variable addressed by such a name.
+   */
+  public createSourceNamespaceReferenceValue(
+    referenceName: VariableValue,
+    type: Type,
+    astNode?: ASTNode,
+  ): VariableValue {
+    return new VariableValue(
+      [
+        new VarPCode(
+          ensurePCodeness(referenceName.name),
+          undefined,
+          undefined,
+          referenceName.getVarId(),
+        ),
+      ],
+      VariableScope.GLOBAL,
+      type,
+      astNode,
+    );
+  }
+
+  /**
+   * Resolves a schema dictionary entry to its backing global variable.  The
+   * dictionary deliberately yields a name string, not a copied value.
+   */
+  public compileSourceNamespaceReferenceGet(
+    dictionary: TangibleValue,
+    key: TangibleValue,
+    type: Type,
+    astNode: ASTNode | undefined,
+    ctx: EvaluationContext,
+  ): [VariableValue, CodeBlock[]] {
+    let referenceName = ctx.tvp.newTempVar(Type.str);
+    let target = this.createSourceNamespaceReferenceValue(
+      referenceName,
+      type,
+      astNode,
+    );
+    return [target, [
+      new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+        action: "GetDictValue",
+        args: [referenceName, dictionary, key],
+      }),
+    ]];
+  }
+
+  /**
+   * Function-schema fields store function selectors directly; every other
+   * namespace dictionary field stores a global-variable name. Select the
+   * appropriate consumer for a retrieved entry without treating a selector
+   * as a global variable name.
+   */
+  public compileSourceNamespaceReferenceUse(
+    namespace: SourceNamespace,
+    key: TangibleValue,
+    ctx: EvaluationContext,
+    dereferencedCode: CodeBlock[],
+    selectorCode: CodeBlock[],
+  ): CodeBlock[] {
+    let functionMembers = getSourceNamespaceRuntimeFunctionMembers(namespace);
+    let knownKey = key instanceof StringValue && key.isCompileTimeConstant()
+      ? key.value
+      : null;
+
+    if (knownKey != null) {
+      return functionMembers == null || functionMembers.has(knownKey)
+        ? selectorCode
+        : dereferencedCode;
+    }
+    if (functionMembers == null) return selectorCode;
+    if (functionMembers.size == 0) return dereferencedCode;
+
+    let isFunctionSelector = ctx.tvp.newTempVar(Type.num);
+    let code: CodeBlock[] = [
+      new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+        action: "=",
+        args: [isFunctionSelector, new NumberValue("0")],
+      }),
+    ];
+    for (const name of functionMembers) {
+      code.push(
+        new ActionBlock(DFCodeblockName.IF_VARIABLE, {
+          action: "=",
+          args: [key, new StringValue(name)],
+        }),
+        new BracketBlock({
+          type: BracketType.IF,
+          direction: BracketDirection.OPEN,
+        }),
+        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "=",
+          args: [isFunctionSelector, new NumberValue("1")],
+        }),
+        new BracketBlock({
+          type: BracketType.IF,
+          direction: BracketDirection.CLOSE,
+        }),
+      );
+    }
+    code.push(
+      new ActionBlock(DFCodeblockName.IF_VARIABLE, {
+        action: "=",
+        args: [isFunctionSelector, new NumberValue("1")],
+      }),
+      new BracketBlock({
+        type: BracketType.IF,
+        direction: BracketDirection.OPEN,
+      }),
+      ...selectorCode,
+      new BracketBlock({
+        type: BracketType.IF,
+        direction: BracketDirection.CLOSE,
+      }),
+      new ElseBlock({}),
+      new BracketBlock({
+        type: BracketType.IF,
+        direction: BracketDirection.OPEN,
+      }),
+      ...dereferencedCode,
+      new BracketBlock({
+        type: BracketType.IF,
+        direction: BracketDirection.CLOSE,
+      }),
+    );
+    return code;
+  }
+
+  /**
+   * ASSUMES A SIMPLIFIED `BooleanOperation` IS BEING PASSED IN!!
+   *
+   * PASSING IN A BOOLEAN OPERATION TREE WITH STACKED NEGATIONS WILL BREAK THINGS!
+   */
+  compileBooleanOperation(
+    e: BooleanOperation | Expression,
+    body: CodeBlock[],
+    context: ExpressionContext,
+  ): CodeBlock[] {
+    let invert = false;
+    if (e instanceof BooleanOperation) {
+      switch (e.operation) {
+        case TokenType.BOOL_AND: {
+          return this.compileBooleanOperation(
+            e.a,
+            this.compileBooleanOperation(e.b!, body, context),
+            context,
+          );
+        }
+        // TODO: optimize cases where you don't need an actual structural or (like val == 1 || val == 2)
+        case TokenType.BOOL_OR: {
+          // BOOLEAN EXPRESSION CASE:
+          // if a IS a boolean expression, we can't rely on built-in if-else since
+          // a cannot be put into that if.
+          // therefore we need to keep track of whether or not a is true after it's
+          // evaluated so we can simulate an else block
+          if (e.a instanceof BooleanOperation) {
+            /*
                         (default.isSneaking() && default.isSprinting())
                             || default.heldSlot == 5
                             || default.heldSlot == 4
                         */
-                        // TODO: investigate whether or not run markers can be shared in cases like the above example
-                        let runMarker = this.tempVarProvider.newTempVar(Type.num);
-                        let runMarkerInitBlock = new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                            action: "=",
-                            args: [runMarker, new NumberValue("0")]
-                        });
-                        let runMarkerSetterBlock = new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                            action: "=",
-                            args: [runMarker, new NumberValue("1")]
-                        });
-                        return [
-                            runMarkerInitBlock,
-                            ...this.compileBooleanOperation(e.a, [runMarkerSetterBlock, ...body], context),
-                            new ActionBlock(DFCodeblockName.IF_VARIABLE, {
-                                action: "=",
-                                args: [runMarker, new NumberValue("0")]
-                            }),
-                            new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.IF}),
-                                ...this.compileBooleanOperation(e.b!, [...body], context),
-                            new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.IF}),
-                        ];
-                    }
-                    // BOOLEAN ATOM CASE: 
-                    // if a isn't itself a boolean expression, we can use an if-else structure
-                    // since a can be placed directly in the condition of that if.
-                    // this avoids setting the temp var thats required in the run marker case
-                    else {
-                        return [
-                            ...this.compileBooleanOperation(e.a, [...body], context),
-                            new ElseBlock({}),
-                            new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.IF}),
-                                ...this.compileBooleanOperation(e.b!, [...body], context),
-                            new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.IF}),
-                        ];
-                    }
-                }
-                case TokenType.BANG: {
-                    if (e.a instanceof BooleanOperation)
-                        throw new Error(`Non-atomic NOT operation supplied to compileBooleanOperation (${e})`);
-                    invert = true;
-                    e = e.a;
-                    break;
-                }
-            }
+            // TODO: investigate whether or not run markers can be shared in cases like the above example
+            let runMarker = this.tempVarProvider.newTempVar(Type.num);
+            let runMarkerInitBlock = new ActionBlock(
+              DFCodeblockName.SET_VARIABLE,
+              {
+                action: "=",
+                args: [runMarker, new NumberValue("0")],
+              },
+            );
+            let runMarkerSetterBlock = new ActionBlock(
+              DFCodeblockName.SET_VARIABLE,
+              {
+                action: "=",
+                args: [runMarker, new NumberValue("1")],
+              },
+            );
+            return [
+              runMarkerInitBlock,
+              ...this.compileBooleanOperation(e.a, [
+                runMarkerSetterBlock,
+                ...body,
+              ], context),
+              new ActionBlock(DFCodeblockName.IF_VARIABLE, {
+                action: "=",
+                args: [runMarker, new NumberValue("0")],
+              }),
+              new BracketBlock({
+                direction: BracketDirection.OPEN,
+                type: BracketType.IF,
+              }),
+              ...this.compileBooleanOperation(e.b!, [...body], context),
+              new BracketBlock({
+                direction: BracketDirection.CLOSE,
+                type: BracketType.IF,
+              }),
+            ];
+          } // BOOLEAN ATOM CASE:
+          // if a isn't itself a boolean expression, we can use an if-else structure
+          // since a can be placed directly in the condition of that if.
+          // this avoids setting the temp var thats required in the run marker case
+          else {
+            return [
+              ...this.compileBooleanOperation(e.a, [...body], context),
+              new ElseBlock({}),
+              new BracketBlock({
+                direction: BracketDirection.OPEN,
+                type: BracketType.IF,
+              }),
+              ...this.compileBooleanOperation(e.b!, [...body], context),
+              new BracketBlock({
+                direction: BracketDirection.CLOSE,
+                type: BracketType.IF,
+              }),
+            ];
+          }
+        }
+        case TokenType.BANG: {
+          if (e.a instanceof BooleanOperation) {
+            throw new Error(
+              `Non-atomic NOT operation supplied to compileBooleanOperation (${e})`,
+            );
+          }
+          invert = true;
+          e = e.a;
+          break;
+        }
+      }
+    }
+
+    let [val, valCode] = this.compileExpression(e, context);
+
+    if (!(val instanceof TangibleValue)) {
+      this.reportError(
+        e,
+        `Cannot check truthiness of '${val.constructor.name}'`,
+        val,
+      );
+      return [];
+    }
+
+    return [
+      ...valCode,
+      new ActionBlock(DFCodeblockName.IF_VARIABLE, {
+        action: "!=",
+        args: [val, new NumberValue("0")],
+        not: invert,
+      }),
+      new BracketBlock({
+        direction: BracketDirection.OPEN,
+        type: BracketType.IF,
+      }),
+      ...body,
+      new BracketBlock({
+        direction: BracketDirection.CLOSE,
+        type: BracketType.IF,
+      }),
+    ];
+  }
+
+  validateSingleAccess(
+    accessee: CodeValue,
+    accessor: CodeValue | string,
+    expression: AccessExpression | BracketedAccessExpression,
+    mode: "member" | "property",
+  ) {
+    if (mode == "member" && accessor instanceof CodeValue) {
+      if (!(accessor instanceof TangibleValue)) {
+        this.reportError(
+          expression.propertyName,
+          `Type '${
+            accessor.getType(this.env.types)
+          }' cannot be used as an indexer`,
+        );
+        return false;
+      }
+
+      let accesseeType = accessee.getType(this.env.types).getRuntimeType();
+      let accessorType = accessor.getType(this.env.types);
+      let accessorValue: number | string | undefined = undefined;
+      if (accessor.isCompileTimeConstant()) {
+        if (accessor instanceof NumberValue) {
+          let v = tcParseNumber(accessor.value as string);
+          if (!isNaN(v)) {
+            accessorValue = v;
+          }
+        } else if (accessor instanceof StringValue) {
+          accessorValue = accessor.value.toString();
+        }
+      }
+
+      if (accesseeType.matches(Type.list)) {
+        if (!accessorType.matches(Type.num)) {
+          this.reportError(
+            expression.propertyName,
+            `Type '${accessorType.name}' cannot be used to index into lists`,
+          );
+          return false;
+        }
+        if (typeof accessorValue == "number") {
+          if (
+            parseFloat((accessor as NumberValue).value as string) !=
+              accessorValue
+          ) {
+            this.reportError(
+              expression.propertyName,
+              `List index must be a whole number`,
+            );
+            return false;
+          }
+          if (accessorValue <= 0) {
+            this.reportError(
+              expression.propertyName,
+              `List index must be >= 1${
+                accessorValue == 0
+                  ? " (lists start at index 1 in DiamondFire)"
+                  : ""
+              }`,
+            );
+            return false;
+          }
+        }
+      } else if (accesseeType.matches(Type.dict)) {
+        if (!accessorType.matches(Type.str)) {
+          this.reportError(
+            expression.propertyName,
+            `Type '${accessorType.name}' cannot be used to index into dictionaries, only strings are allowed as keys`,
+          );
+          return false;
+        }
+      } else {
+        this.reportError(
+          expression.propertyName,
+          `Member access not allowed on type '${
+            accessee.getType(this.env.types).name
+          }'`,
+          accessee,
+        );
+        return false;
+      }
+
+      return true;
+    } else if (mode == "member" && typeof accessor == "string") {
+      let accesseeType = accessee.getType(this.env.types);
+      let definition = accesseeType.getPropertyDefinition(accessor);
+      if (definition == undefined) {
+        // todo: special error messages for if the namespace is a player action or game action or whatever
+        let name: string;
+        if (accessee instanceof NamespaceValue) {
+          name = `'${accessee.namespace.identifier}'`;
+        } else {
+          name = accesseeType.name;
+        }
+        this.reportError(
+          expression.propertyName,
+          `'${accessor}' is not a property of ${name}`,
+          accessee,
+        );
+        return false;
+      }
+
+      return true;
+    }
+    this.reportError(
+      expression,
+      `(internal compiler error) Invalid state passed to validateSingleAccess: Requested mode '${mode}' but provided a ${accessor?.constructor.name} as an accessor`,
+    );
+    return false;
+  }
+
+  /** Assumes the access has already been validated via `validateSingleAccess()` */
+  compileSingleAccessGet(
+    accessee: CodeValue,
+    /** Pass in a TangibleValue for member access and a string for property access */
+    accessor: TangibleValue | string,
+    expression: AccessExpression | BracketedAccessExpression,
+    mode: "member" | "property",
+    context: ExpressionContext,
+  ): [CodeValue, CodeBlock[]] {
+    let code: CodeBlock[] = [];
+    if (mode == "member" && accessor instanceof TangibleValue) {
+      let tvp = context.perSelectedMode
+        ? this.perSelectedTempVarProvider
+        : this.tempVarProvider;
+
+      let declaredAccesseeType = accessee.getType(this.env.types);
+      let accesseeType = declaredAccesseeType.getRuntimeType();
+
+      // Schema function values are stored as their mangled DF names in a
+      // dictionary.  Keep them as FunctionValues here so a subsequent
+      // `()` emits a dynamic Call Function/Start Process instead of
+      // treating the retrieved string as an ordinary value.
+      if (
+        accessee instanceof TangibleValue &&
+        declaredAccesseeType.matches(Type.namespace) &&
+        (declaredAccesseeType.data as NamespaceTypeData).namespace instanceof
+          SourceNamespace
+      ) {
+        let namespace = (declaredAccesseeType.data as NamespaceTypeData)
+          .namespace as SourceNamespace;
+        let member =
+          accessor instanceof StringValue && accessor.isCompileTimeConstant()
+            ? accessor.value
+            : undefined;
+        let definition = namespace.getDynamicFunctionDefinition?.(member);
+        if (definition != null) {
+          return [
+            new FunctionValue(definition, undefined, expression, {
+              dictionary: accessee,
+              key: accessor,
+            }),
+            code,
+          ];
         }
 
-        let [val, valCode] = this.compileExpression(e, context);
+        return this.compileSourceNamespaceReferenceGet(
+          accessee,
+          accessor,
+          this.env.types.evaluateExpression(expression),
+          expression,
+          this.getEvaluationContext(context.perSelectedMode),
+        );
+      }
 
-        if (!(val instanceof TangibleValue)) {
-            this.reportError(e, `Cannot check truthiness of '${val.constructor.name}'`, val);
+      // list accessing
+      if (accesseeType.matches(Type.list)) {
+        let tempVar = tvp.newTempVar(
+          this.env.types.evaluateExpression(expression),
+        );
+
+        let codeBlock = new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "GetListValue",
+          args: [tempVar, accessee as TangibleValue, accessor],
+        });
+
+        return [tempVar, [...code, codeBlock]];
+      } // dict accessing
+      else if (accesseeType.matches(Type.dict)) {
+        let tempVar = tvp.newTempVar(
+          this.env.types.evaluateExpression(expression),
+        );
+
+        let codeBlock = new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "GetDictValue",
+          args: [tempVar, accessee as TangibleValue, accessor],
+        });
+
+        return [tempVar, [...code, codeBlock]];
+      }
+    } else if (mode == "property" && typeof accessor == "string") {
+      let accesseeType = accessee.getType(this.env.types);
+
+      let definition = accesseeType.getPropertyDefinition(accessor);
+      if (isFunctionDefinition(definition)) {
+        if (
+          definition.runtimeNamespaceFunction &&
+          accessee instanceof TangibleValue
+        ) {
+          return [
+            new FunctionValue(definition, undefined, expression, {
+              dictionary: accessee,
+              key: new StringValue(accessor, expression.propertyName),
+            }),
+            code,
+          ];
+        }
+        // Namespace members are not receiver methods.  Schema-backed
+        // namespaces happen to be tangible dictionary variables, so
+        // relying on tangibility alone would incorrectly prepend the
+        // namespace dictionary to ordinary namespace function calls.
+        let methodCallOf = (
+            !accesseeType.matches(Type.namespace) &&
+            accessee instanceof TangibleValue
+          )
+          ? accessee
+          : undefined;
+        return [new FunctionValue(definition, methodCallOf, expression), code];
+      } else if (isValueDefinition(definition)) {
+        return definition.compile(
+          this.getEvaluationContext(context.perSelectedMode),
+        );
+      } else if (isNamespaceVariableDefinition(definition)) {
+        return definition.compile(
+          this.getEvaluationContext(context.perSelectedMode),
+        );
+      } else if (isPropertyDefinition(definition)) {
+        return definition.compileGet(
+          this.getEvaluationContext(context.perSelectedMode),
+          accessee,
+        );
+      }
+    }
+    return [new MissingValue(expression), code];
+  }
+
+  /** Assumes the access has already been validated via `validateSingleAccess()` */
+  compileSingleAccessSet(
+    accessee: TangibleValue,
+    /** Pass in a TangibleValue for member access and a string for property access */
+    accessor: TangibleValue | string,
+    value: TangibleValue,
+    mode: "member" | "property",
+    context: ExpressionContext,
+    /**
+     * Nested source-namespace values are addressed through a stable backing
+     * variable name. Once a child has been mutated, writing it back to the
+     * namespace dictionary would copy its value over that name reference.
+     */
+    propagatingNestedWrite = false,
+  ): CodeBlock[] {
+    let declaredAccesseeType = accessee.getType(this.env.types);
+    let accesseeType = declaredAccesseeType.getRuntimeType();
+    if (mode == "member" && accessor instanceof TangibleValue) {
+      if (
+        declaredAccesseeType.matches(Type.namespace) &&
+        (declaredAccesseeType.data as NamespaceTypeData).namespace instanceof
+          SourceNamespace
+      ) {
+        if (propagatingNestedWrite) return [];
+        let namespace = (declaredAccesseeType.data as NamespaceTypeData)
+          .namespace as SourceNamespace;
+        return this.compileSourceNamespaceDynamicSet(
+          namespace,
+          accessee,
+          accessor,
+          value,
+          context,
+        );
+      }
+      if (accesseeType.matches(Type.list)) {
+        return [
+          new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "SetListValue",
+            args: [accessee, accessor, value],
+          }),
+        ];
+      } else if (accesseeType.matches(Type.dict)) {
+        return [
+          new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "SetDictValue",
+            args: [accessee, accessor, value],
+          }),
+        ];
+      }
+    } else if (mode == "property" && typeof accessor == "string") {
+      let definition = declaredAccesseeType.getPropertyDefinition(accessor);
+      if (isPropertyDefinition(definition)) {
+        return definition.compileSet(
+          value,
+          this.getEvaluationContext(context.perSelectedMode),
+          accessee,
+        );
+      }
+      if (isNamespaceVariableDefinition(definition)) {
+        return definition.compileSet(
+          value,
+          this.getEvaluationContext(context.perSelectedMode),
+        );
+      }
+    }
+    return [];
+  }
+
+  /** Writes through the global variable named by a schema dictionary entry. */
+  private compileSourceNamespaceDynamicSet(
+    namespace: SourceNamespace,
+    dictionary: TangibleValue,
+    key: TangibleValue,
+    value: TangibleValue,
+    context: ExpressionContext,
+  ): CodeBlock[] {
+    let member = key instanceof StringValue && key.isCompileTimeConstant()
+      ? key.value
+      : undefined;
+    let memberType = namespace.getDynamicMemberType?.(member) ?? Type.any;
+    let [target, lookupCode] = this.compileSourceNamespaceReferenceGet(
+      dictionary,
+      key,
+      memberType,
+      value.astNode ?? dictionary.astNode ?? key.astNode,
+      this.getEvaluationContext(context.perSelectedMode),
+    );
+    return [
+      ...lookupCode,
+      new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+        action: "=",
+        args: [target, value],
+      }),
+    ];
+  }
+
+  compileExpression(
+    e: Expression | Token,
+    context: ExpressionContext,
+  ): [CodeValue, CodeBlock[]] {
+    let tvp = context.perSelectedMode
+      ? this.perSelectedTempVarProvider
+      : this.tempVarProvider;
+    // TODO: structure this and the compileStatement thing more like how the parser does stuff
+    if (
+      e instanceof Expression && BooleanOperation.exprIsBooleanExpression(e)
+    ) {
+      // convert expression into BooleanOperation classes to make it easier to work with
+      let operationTree = BooleanOperation.generateFromExpression(e);
+      let simplified = BooleanOperation.simplify(operationTree);
+      let output = tvp.newTempVar(Type.num);
+      let code = [
+        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "=",
+          args: [output, new NumberValue("0")],
+        }),
+        ...this.compileBooleanOperation(simplified, [
+          new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "=",
+            args: [output, new NumberValue("1")],
+          }),
+        ], context),
+      ];
+      return [output, code];
+    } else if (e instanceof BinaryExpression) {
+      let [left, lCode] = this.compileExpression(e.left, context);
+      let [right, rCode] = this.compileExpression(e.right, context);
+      let [result, oprCode] = Operations.evaluateBinaryValue(
+        left,
+        e.operator,
+        right,
+        this.getEvaluationContext(context.perSelectedMode),
+      );
+      return [result, [...lCode, ...rCode, ...oprCode]];
+    } else if (e instanceof UnaryPrefixExpression) {
+      let [right, rCode] = this.compileExpression(e.right, context);
+      let [result, oprCode] = Operations.evaluateUnaryValue(
+        e.operator,
+        right,
+        this.getEvaluationContext(context.perSelectedMode),
+      );
+      return [result, [...rCode, ...oprCode]];
+    } else if (e instanceof CallExpression) {
+      let [callee, preCode] = this.compileExpression(e.callee, context);
+
+      let definition: FunctionDefinition | null = null;
+      let methodCallOf: TangibleValue | undefined;
+      let runtimeNamespaceAccess:
+        FunctionCallExtraInfo["runtimeNamespaceAccess"];
+      if (callee instanceof FunctionValue) {
+        definition = callee.definition;
+        methodCallOf = callee.methodCallOf;
+        runtimeNamespaceAccess = callee.runtimeNamespaceAccess;
+      } else if (callee instanceof NamespaceValue) {
+        if (callee.namespace.nameFunction) {
+          definition = callee.namespace.nameFunction;
+        } else {
+          this.reportError(
+            e.callee,
+            `'${callee.namespace.identifier}' cannot be called as a function`,
+            callee,
+          );
+        }
+      } // error case; no definition could be found
+      else {
+        this.reportError(
+          e.callee,
+          `Type '${
+            callee.getType(this.env.types).name
+          }' cannot be called as a function`,
+          callee,
+        );
+      }
+
+      if (definition) {
+        if (
+          !definition.runtimeNamespaceFunction &&
+          this.isProcessFunctionDefinition(definition)
+        ) {
+          this.reportError(e.callee, "Processes must be invoked with 'start'");
+          return [new MissingValue(e), preCode];
+        }
+        let [value, code] = this.compileCallExpression(e, definition, context, {
+          methodCallOf,
+          runtimeNamespaceAccess,
+        });
+        return [value, [...preCode, ...code]];
+      } else {
+        return [new MissingValue(e), [...preCode]];
+      }
+    } else if (e instanceof CallOrStartExpression) {
+      let isProcess = e.keyword.type == TokenType.START;
+      let resolvedTarget = e.callee instanceof AtomicExpression
+        ? this.env.types.resolveIdentifier(e.callee.token)
+        : null;
+      let isSourceNamespaceFunctionTarget =
+        isFunctionDefinition(resolvedTarget) &&
+        resolvedTarget.astNode != null &&
+        this.env.types.sourceNamespaceFunctionStatements.has(
+          resolvedTarget.astNode,
+        );
+      let legacyTarget = e.callee instanceof AtomicExpression &&
+        (e.callee.token.type == TokenType.IDENTIFIER ||
+          e.callee.token.type == TokenType.STRING_LITERAL) &&
+        (
+          e.callee.token.type == TokenType.STRING_LITERAL ||
+          !isSourceNamespaceFunctionTarget
+        );
+
+      // Preserve the established `call`/`start` behavior for literal and
+      // percent-code names while allowing namespace/member expressions.
+      if (legacyTarget && e.callee instanceof AtomicExpression) {
+        let target = e.callee.token;
+        let [pcErrors, pcode] = this.pcodeParser.parse(target.value);
+        for (let err of pcErrors) {
+          this.errors.push(
+            new TCNodePCodeError(target, err, ErrorType.COMPILER),
+          );
+        }
+        let isConstant = pcode.length == 1 && pcode[0] instanceof SegmentPCode;
+        let definition = this.env.types.getUserFuncDef(
+          isProcess,
+          target.value,
+          !isConstant,
+        );
+        if (definition) {
+          return this.compileCallExpression(e, definition, context);
+        }
+        this.reportError(
+          target,
+          `Invalid ${
+            isProcess ? "process" : "function"
+          } name '${target.value}'`,
+        );
+        return [new MissingValue(e), []];
+      }
+
+      let [callee, preCode] = this.compileExpression(e.callee, context);
+      if (!(callee instanceof FunctionValue)) {
+        this.reportError(
+          e.callee,
+          `Type '${callee.getType(this.env.types).name}' cannot be ${
+            isProcess ? "started as a process" : "called as a function"
+          }`,
+          callee,
+        );
+        return [new MissingValue(e), preCode];
+      }
+
+      let definition = callee.definition;
+      if (!definition.runtimeNamespaceFunction) {
+        let definitionIsProcess = this.isProcessFunctionDefinition(definition);
+        if (isProcess != definitionIsProcess) {
+          this.reportError(
+            e.callee,
+            isProcess
+              ? "This namespace member is a function; call it without 'start'"
+              : "This namespace member is a process; invoke it with 'start'",
+          );
+          return [new MissingValue(e), preCode];
+        }
+      }
+      let [value, code] = this.compileCallExpression(e, definition, context, {
+        methodCallOf: callee.methodCallOf,
+        runtimeNamespaceAccess: callee.runtimeNamespaceAccess,
+      });
+      return [value, [...preCode, ...code]];
+    } else if (e instanceof BracketedAccessExpression) {
+      let [accessee, accesseeCode] = this.compileExpression(
+        e.accessee,
+        context,
+      );
+      let [accessor, accessorCode] = this.compileExpression(
+        e.propertyName,
+        context,
+      );
+      if (!this.validateSingleAccess(accessee, accessor, e, "member")) {
+        return [new MissingValue(e), []];
+      }
+      let [val, accessCode] = this.compileSingleAccessGet(
+        accessee,
+        accessor as TangibleValue,
+        e,
+        "member",
+        context,
+      );
+      return [val, [...accesseeCode, ...accessorCode, ...accessCode]];
+    } else if (e instanceof AccessExpression) {
+      let [accessee, accessorCode] = this.compileExpression(
+        e.accessee,
+        context,
+      );
+      let propertyName = e.propertyName.value;
+
+      if (!this.validateSingleAccess(accessee, propertyName, e, "member")) {
+        return [new MissingValue(e), []];
+      }
+
+      let [val, accessCode] = this.compileSingleAccessGet(
+        accessee,
+        propertyName,
+        e,
+        "property",
+        context,
+      );
+
+      return [val, [...accessorCode, ...accessCode]];
+    } else if (e instanceof VariableExpression) {
+      // throw error for type annotation in bad place
+      if (
+        e.assignedType &&
+        !(
+          // in here go cases where type annotation **is** allowed
+          (e.parent && e.parent instanceof AssignmentStatement &&
+            e.keyInParent == "leftValues") ||
+          (e.parent && e.parent instanceof ExpressionStatement)
+        )
+      ) {
+        this.reportError(
+          e.assignedType,
+          `Variable type annotation is not allowed here`,
+        );
+      }
+
+      //
+      return [
+        new VariableValue(
+          e.name.value,
+          VariableScope[TokenType[e.scope.type]],
+          undefined,
+          e,
+        ),
+        [],
+      ];
+    } else if (e instanceof ListExpression) {
+      let code: CodeBlock[] = [];
+      let tempVar = tvp.newTempVar(this.env.types.evaluateExpression(e));
+
+      let contents: TangibleValue[] = [];
+      for (const element of e.elements) {
+        let [value, valueCode] = this.compileExpression(element, context);
+        code.push(...valueCode);
+        if (!(value instanceof TangibleValue)) {
+          this.reportError(
+            element,
+            `${value.constructor.name} cannot be stored in lists`,
+            value,
+          );
+          continue;
+        }
+        contents.push(value);
+      }
+
+      if (contents.length > LIST_LENGTH_LIMIT) {
+        this.reportError(
+          e,
+          `List length (${contents.length}) exceeds DiamondFire's list length limit of ${LIST_LENGTH_LIMIT}`,
+        );
+      }
+
+      return [tempVar, [
+        ...code,
+        ...this.compileListContents(tempVar, contents),
+      ]];
+    } else if (e instanceof DictionaryExpression) {
+      let code: CodeBlock[] = [];
+      let tempVar = tvp.newTempVar(this.env.types.evaluateExpression(e));
+      let keysTempVar = tvp.newTempVar(Type.list(Type.str));
+      let valuesTempVar = tvp.newTempVar(Type.list(Type.any));
+      let keysContents: TangibleValue[] = [];
+      let valuesContents: TangibleValue[] = [];
+
+      for (const entry of e.entries) {
+        // variable key
+        if (entry.key instanceof GroupExpression) {
+          let [key, keyCode] = this.compileExpression(entry.key, context);
+          let keyType = key.getType(this.env.types);
+          if (keyType.matches(Type.str) && key instanceof TangibleValue) {
+            code.push(...keyCode);
+            keysContents.push(key);
+          } else {
+            this.reportError(
+              entry.key,
+              `Expected type 'str' for dictionary key (got '${keyType.name}')`,
+            );
+            continue;
+          }
+        } // constant key
+        else {
+          keysContents.push(new StringValue(entry.key.value, entry.key));
+        }
+
+        // value
+        let [value, valueCode] = this.compileExpression(entry.value, context);
+        if (!(value instanceof TangibleValue)) {
+          this.reportError(
+            entry,
+            `${value.constructor.name} cannot be stored in lists`,
+            value,
+          );
+          continue;
+        }
+        code.push(...valueCode);
+        valuesContents.push(value);
+      }
+
+      if (keysContents.length > DICT_LENGTH_LIMIT) {
+        this.reportError(
+          e,
+          `Dictionary length (${keysContents.length}) exceeds DiamondFire's dictionary length limit of ${DICT_LENGTH_LIMIT}`,
+        );
+      }
+
+      let keysCode = this.compileListContents(keysTempVar, keysContents);
+      let valuesCode = this.compileListContents(valuesTempVar, valuesContents);
+
+      return [tempVar, [
+        ...code,
+        ...keysCode,
+        ...valuesCode,
+        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "CreateDict",
+          args: [tempVar, keysTempVar, valuesTempVar],
+        }),
+      ]];
+    } else if (e instanceof AtomicExpression) {
+      return this.compileExpression(e.token, context);
+    } else if (e instanceof Token) {
+      switch (e.type) {
+        // identifier resolution all happens here
+        case TokenType.IDENTIFIER:
+        case TokenType.NAMESPACE: {
+          let resolved = this.env.types.resolveIdentifier(e);
+          if (resolved instanceof Namespace) {
+            if (resolved instanceof SourceNamespace) {
+              return [
+                this.env.types.getSourceNamespaceRuntimeValue(resolved, e),
+                [],
+              ];
+            }
+            return [new NamespaceValue(resolved, e), []];
+          } else if (isFunctionDefinition(resolved)) {
+            return [new FunctionValue(resolved, undefined, e), []];
+          } else if (isValueDefinition(resolved)) {
+            return resolved.compile(
+              this.getEvaluationContext(context.perSelectedMode),
+            );
+          } else if (isNamespaceVariableDefinition(resolved)) {
+            return resolved.compile(
+              this.getEvaluationContext(context.perSelectedMode),
+            );
+          } else if (isVariableEntry(resolved)) {
+            return [
+              new VariableValue(
+                resolved.id.name,
+                resolved.id.scope,
+                resolved.type ?? undefined,
+                e,
+              ),
+              [],
+            ];
+          }
+          this.reportError(
+            e,
+            `Could not resolve identifier '${e.value}'`,
+          );
+          return [new MissingValue(e), []];
+        }
+        case TokenType.NUMERIC_LITERAL: {
+          return [new NumberValue(tcParseNumber(e.value).toString(), e), []];
+        }
+        case TokenType.NUMEXPR_LITERAL: {
+          if (e.value.length > STRING_LENGTH_LIMIT) {
+            this.reportError(
+              e,
+              `Numeric literal length (${e.value.length}) exceeds DiamondFire's string length limit of ${STRING_LENGTH_LIMIT}`,
+            );
+          }
+          let [errors, parsed] = this.pcodeParser.parse(e.value);
+          if (errors.length > 0) {
+            for (let err of errors) {
+              this.errors.push(
+                new TCNodePCodeError(e, err, ErrorType.COMPILER),
+              );
+            }
+            return [new MissingValue(e), []];
+          } else {
+            return [new NumberValue(parsed, e), []];
+          }
+        }
+        case TokenType.STRING_LITERAL: {
+          if (e.value.length > STRING_LENGTH_LIMIT) {
+            this.reportError(
+              e,
+              `String length (${e.value.length}) exceeds DiamondFire's string length limit of ${STRING_LENGTH_LIMIT}`,
+            );
+          }
+
+          let [errors, parsed] = this.pcodeParser.parse(e.value);
+          if (errors.length > 0) {
+            for (let err of errors) {
+              this.errors.push(
+                new TCNodePCodeError(e, err, ErrorType.COMPILER),
+              );
+            }
+            return [new MissingValue(e), []];
+          } else if (parsed.length == 1 && parsed[0] instanceof SegmentPCode) {
+            return [new StringValue(e.value), []];
+          } else {
+            return [new StringValue(parsed, e), []];
+          }
+        }
+        case TokenType.STYLED_LITERAL: {
+          if (e.value.length > STRING_LENGTH_LIMIT) {
+            this.reportError(
+              e,
+              `Styled text length (${e.value.length}) exceeds DiamondFire's string length limit of ${STRING_LENGTH_LIMIT}`,
+            );
+          }
+          return [new StyledTextValue(e.value, e), []];
+        }
+        default: {
+          return [new MissingValue(e), []];
+        }
+      }
+    } else if (e instanceof TypecastExpression) {
+      let [value, valueCode] = this.compileExpression(e.left, context);
+      let type = this.env.types.evaluateExplicitType(e.type, {
+        reportErrors: true,
+      });
+      // this is definitely in the runnings for "most sinful code i've ever written"
+      value.getType = () => type;
+      return [value, valueCode];
+    } else if (e instanceof GroupExpression) {
+      return this.compileExpression(e.expression, context);
+    } else if (e instanceof PerSelectedExpression) {
+      return this.compileExpression(e.expression, {
+        ...context,
+        perSelectedMode: true,
+      });
+    } // compileStatement() handles the actual compilation of selection statements
+    else if (e instanceof SelectionExpression) {
+      if (!(e.parent instanceof CallExpression)) {
+        this.reportError(e, `Expected argument list following action name`);
+        return [new MissingValue(), []];
+      }
+      this.reportError(
+        e.parent,
+        `'${e.keyword.value}' must be a standalone statement`,
+      );
+      return [new MissingValue(), []];
+    } else if (e instanceof MissingExpression) {
+      return [new MissingValue(e), []];
+    }
+    throw new Error(`no idea how to compile this: ${e.constructor.name}`);
+  }
+
+  compileIfStatement(
+    condition: Expression,
+    innerCode: CodeBlock[],
+    invertEntireCondition: boolean,
+    exprContext: ExpressionContext,
+    hasElseAttached: boolean = false,
+  ): CodeBlock[] {
+    let tvp = exprContext.perSelectedMode
+      ? this.perSelectedTempVarProvider
+      : this.tempVarProvider;
+    let operationTree: BooleanOperation | undefined;
+    let realCondition = condition.getRealExpression();
+    if (BooleanOperation.exprIsBooleanExpression(realCondition)) {
+      operationTree = BooleanOperation.generateFromExpression(realCondition);
+    }
+    if (invertEntireCondition) {
+      operationTree = new BooleanOperation(
+        TokenType.BANG,
+        operationTree ?? condition,
+      );
+    }
+
+    let directInsertBoolOpMode = false;
+    let simplifiedBooleanExpression: BooleanOperation | Expression;
+    if (operationTree) {
+      simplifiedBooleanExpression = BooleanOperation.simplify(operationTree);
+      if (
+        !hasElseAttached &&
+        simplifiedBooleanExpression instanceof BooleanOperation &&
+        BooleanOperation.isSinglePath(simplifiedBooleanExpression)
+      ) {
+        directInsertBoolOpMode = true;
+      }
+    } else {
+      simplifiedBooleanExpression = condition;
+      directInsertBoolOpMode = true;
+    }
+
+    if (directInsertBoolOpMode) {
+      return this.compileBooleanOperation(
+        simplifiedBooleanExpression,
+        innerCode,
+        exprContext,
+      );
+    } else {
+      let value = tvp.newTempVar(Type.num);
+      let valueCode = [
+        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "=",
+          args: [value, new NumberValue("0")],
+        }),
+        ...this.compileBooleanOperation(simplifiedBooleanExpression, [
+          new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "=",
+            args: [value, new NumberValue("1")],
+          }),
+        ], exprContext),
+      ];
+
+      return [
+        ...valueCode,
+        new ActionBlock(DFCodeblockName.IF_VARIABLE, {
+          action: "!=",
+          args: [value, new NumberValue("0")],
+        }),
+        new BracketBlock({
+          type: BracketType.IF,
+          direction: BracketDirection.OPEN,
+        }),
+        ...innerCode,
+        new BracketBlock({
+          type: BracketType.IF,
+          direction: BracketDirection.CLOSE,
+        }),
+      ];
+    }
+  }
+
+  validateDeclareStatement(
+    declareStatement: DeclareStatement,
+    allowInitialization: boolean,
+  ) {
+    let keyword = declareStatement.keyword;
+    let s = declareStatement.subStatement;
+    let varExpressions: Expression[] = [];
+
+    // error for applying 'declare' to invalid places
+    if (
+      s instanceof ExpressionStatement &&
+      s.expression instanceof VariableExpression
+    ) {
+      varExpressions.push(s.expression);
+    } else if (s instanceof AssignmentStatement) {
+      varExpressions = s.leftValues;
+      if (!allowInitialization && s.rightValue) {
+        this.reportError(
+          s.rightValue,
+          "Variables cannot be assigned values here. Move this declaration into an event, function, or process.",
+        );
+      }
+    } else {
+      this.reportError(keyword, "'declare' keyword cannot be used here");
+    }
+
+    for (let v of varExpressions) {
+      if (v instanceof VariableExpression) {
+        if (v.scope.type == TokenType.LINE) {
+          this.reportError(v, "Line variables cannot be globally declared");
+        }
+        let varId = v.getVarId();
+        let varEntries = this.env.types.globalFrame.variables.get(varId.name)
+          ?.get(varId.scope);
+        if (varEntries && varEntries.length > 1) {
+          this.reportError(
+            v,
+            `${
+              toNameCase(v.scope.value)
+            } variable '${varId.name}' declared in multiple places`,
+          );
+        }
+      } else if (
+        v instanceof AtomicExpression && v.token.type == TokenType.IDENTIFIER
+      ) {
+        this.reportError(
+          v,
+          "Variables must specify their scope to be globally declared",
+        );
+      } else {
+        this.reportError(
+          v,
+          "'declare' keyword cannot be applied to this value",
+        );
+      }
+    }
+  }
+
+  compileStatement = (s: Statement, context: StatementContext): CodeBlock[] => {
+    let tvp = context.perSelectedMode
+      ? this.perSelectedTempVarProvider
+      : this.tempVarProvider;
+
+    if (s instanceof DeclareStatement) {
+      this.validateDeclareStatement(s, true);
+      s = s.subStatement;
+    }
+
+    let exprContext: ExpressionContext = {
+      perSelectedMode: context.perSelectedMode,
+    };
+    if (s instanceof ExpressionStatement) {
+      let e = s.expression;
+
+      // syntactic sugar for argless control functions
+      if (
+        e instanceof AtomicExpression && e.token.type == TokenType.IDENTIFIER
+      ) {
+        let resolved = this.env.types.resolveIdentifier(e.token);
+        let blockName: string | undefined;
+        if (resolved == GLOBAL_SCOPE_INJECTIONS.wait) {
+          blockName = "Wait";
+        } else if (resolved == GLOBAL_SCOPE_INJECTIONS.endthread) {
+          blockName = "End";
+        } else if (resolved == GLOBAL_SCOPE_INJECTIONS.endallthreads) {
+          blockName = "EndAllThreads";
+        }
+        if (blockName) {
+          return [
+            new ActionBlock(DFCodeblockName.CONTROL, {
+              action: blockName,
+            }),
+          ];
+        }
+      }
+
+      // shadowing error
+      if (e instanceof VariableExpression) this.shadowingCheck(e);
+
+      // other argless control blocks
+      // selection statements
+      if (
+        e instanceof CallExpression && e.callee instanceof SelectionExpression
+      ) {
+        let selExpr = e.callee;
+        let definitionBank = selExpr.keyword.type == TokenType.SELECT
+          ? SELECT_ACTIONS
+          : FILTER_ACTIONS;
+        if (!(selExpr.name.value in definitionBank)) {
+          this.reportError(
+            selExpr.name,
+            `Invalid ${selExpr.keyword.value} action '${selExpr.name.value}'`,
+          );
+          return [];
+        }
+        let definition = definitionBank[selExpr.name.value];
+
+        let invert = e.callee.nameInverterToken != null;
+
+        // condition actions
+        if (definition.action?.hasSubActions) {
+          let selAction = definition.action!;
+          if (e.args.elements.length > 1 || e.args.hasTrailingDelimiter) {
+            this.reportError(
+              e.args,
+              `Select action condition cannot have multiple arguments`,
+            );
             return [];
+          } else if (e.args.elements.length == 0) {
+            this.reportError(e.args, `Expected condition inside parentheses`);
+            return [];
+          }
+          let conditionExpr = e.args.elements[0];
+          let oprTree = BooleanOperation.generateIfPossible(conditionExpr);
+          if (e.callee.inverterToken) invert = !invert;
+          if (invert) oprTree = new BooleanOperation(TokenType.BANG, oprTree);
+          if (oprTree instanceof BooleanOperation) {
+            oprTree = BooleanOperation.simplify(oprTree);
+          }
+
+          let code: CodeBlock[] = [];
+
+          // create new selection if the action says to do that
+          // if this select action ends up being one where you can use a direct
+          // PlayersCond/EntitiesCond block, the optimizer will handle actually doing that
+          if (
+            selAction.name == "PlayersCond" || selAction.name == "EntitiesCond"
+          ) {
+            code.push(
+              new SubActionBlock(DFCodeblockName.SELECT_OBJECT, {
+                action: selAction.name == "PlayersCond"
+                  ? "AllPlayers"
+                  : "AllEntities",
+              }),
+            );
+          }
+
+          const recurse = (
+            opr: BooleanOperation | Expression,
+            invertAtomic?: boolean,
+          ) => {
+            if (
+              opr instanceof BooleanOperation &&
+              opr.operation != TokenType.BOOL_OR
+            ) {
+              if (opr.operation == TokenType.BOOL_AND) {
+                recurse(opr.a);
+                recurse(opr.b!);
+              } else if (opr.operation == TokenType.BANG) {
+                recurse(opr.a, true);
+              }
+            } else {
+              let value: CodeValue;
+              let valueCode: CodeBlock[];
+              let errorNode: ASTNode;
+
+              if (opr instanceof Expression) {
+                // if the condition could be inlined in the filter block, the optimizer will handle that
+                [value, valueCode] = this.compileExpression(opr, {
+                  ...exprContext,
+                  perSelectedMode: true,
+                });
+                errorNode = opr;
+                if (!(value instanceof TangibleValue)) {
+                  this.reportError(
+                    opr,
+                    `Cannot check truthiness of '${value.constructor.name}'`,
+                    value,
+                  );
+                  return;
+                }
+              } else {
+                value = this.perSelectedTempVarProvider.newTempVar(Type.num);
+                valueCode = [
+                  new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                    action: "=",
+                    args: [value as VariableValue, new NumberValue("0")],
+                  }),
+                  ...this.compileBooleanOperation(opr, [
+                    new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                      action: "=",
+                      args: [value as VariableValue, new NumberValue("1")],
+                    }),
+                  ], { ...exprContext, perSelectedMode: true }),
+                ];
+              }
+
+              code.push(
+                ...valueCode,
+                new SubActionBlock(DFCodeblockName.SELECT_OBJECT, {
+                  action: "FilterCondition",
+                  subAction: "!=",
+                  args: [value as TangibleValue, new NumberValue("0")],
+                  not: invertAtomic,
+                }),
+              );
+            }
+          };
+          recurse(oprTree);
+          return code;
+        } // normal actions
+        else {
+          let [_, code] = this.compileCallExpression(
+            e,
+            definition,
+            exprContext,
+          );
+          if (e.callee.inverterToken != null) {
+            this.reportError(
+              e.callee.inverterToken,
+              "Inverter (!) must be placed before the action name for this action",
+            );
+          }
+          if (invert) {
+            if (
+              !definition.action ||
+              !(INVERTIBLE_SELECT_ACTIONS.includes(definition.action.name))
+            ) {
+              this.reportError(
+                e.callee.nameInverterToken ?? e.callee,
+                `Selection action '${definition.name}' cannot be inverted`,
+              );
+            }
+            (code[code.length - 1] as ActionBlock).not = true;
+          }
+          return code;
+        }
+        // syntactic sugar for argless selection expresions
+      } else if (e instanceof SelectionExpression) {
+        let selExpr = e;
+        let definitionBank = selExpr.keyword.type == TokenType.SELECT
+          ? SELECT_ACTIONS
+          : FILTER_ACTIONS;
+        if (!(selExpr.name.value in definitionBank)) {
+          this.reportError(
+            selExpr.name,
+            `Invalid ${selExpr.keyword.value} action '${selExpr.name.value}'`,
+          );
+          return [];
+        }
+        let definition = definitionBank[selExpr.name.value];
+
+        if (
+          definition.signatures[0]?.params.length > 0 ||
+          Object.keys(definition.action!.tags).length > 0 ||
+          definition.action?.hasSubActions
+        ) {
+          let reqStr = definition.action?.hasSubActions
+            ? "a condition wrapped in parentheses"
+            : "arguments";
+          this.reportError(
+            selExpr.name,
+            `${
+              upperFirst(selExpr.keyword.value)
+            } action '${selExpr.name.value}' requires ${reqStr}`,
+          );
+          return [];
         }
 
         return [
-            ...valCode,
-            new ActionBlock(DFCodeblockName.IF_VARIABLE, {
-                action: "!=",
-                args: [val, new NumberValue("0")],
-                not: invert,
-            }),
-            new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.IF}),
-                ...body,
-            new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.IF}),
-        ]
-    }
-
-    validateSingleAccess(
-        accessee: CodeValue, 
-        accessor: CodeValue | string, 
-        expression: AccessExpression | BracketedAccessExpression, 
-        mode: "member" | "property", 
-    ) {
-        if (mode == "member" && accessor instanceof CodeValue) {
-            if (!(accessor instanceof TangibleValue)) {
-                this.reportError(
-                    expression.propertyName,
-                    `Type '${accessor.getType(this.env.types)}' cannot be used as an indexer`
-                );
-                return false;
-            }
-    
-            let accesseeType = accessee.getType(this.env.types).getRuntimeType();
-            let accessorType = accessor.getType(this.env.types);
-            let accessorValue: number | string | undefined = undefined;
-            if (accessor.isCompileTimeConstant()) {
-                if (accessor instanceof NumberValue) {
-                    let v = tcParseNumber(accessor.value as string);
-                    if (!isNaN(v)) {
-                        accessorValue = v;
-                    }
-                }
-                else if (accessor instanceof StringValue) {
-                    accessorValue = accessor.value.toString();
-                }
-            }
-    
-            if (accesseeType.matches(Type.list)) {
-                if (!accessorType.matches(Type.num)) {
-                    this.reportError(
-                        expression.propertyName,
-                        `Type '${accessorType.name}' cannot be used to index into lists`
-                    );
-                    return false;
-                }
-                if (typeof accessorValue == "number") {
-                    if (parseFloat((accessor as NumberValue).value as string) != accessorValue) {
-                        this.reportError(
-                            expression.propertyName,
-                            `List index must be a whole number`
-                        );
-                        return false;
-                    }
-                    if (accessorValue <= 0) {
-                        this.reportError(
-                            expression.propertyName,
-                            `List index must be >= 1${accessorValue == 0 ? " (lists start at index 1 in DiamondFire)" : ""}`
-                        )
-                        return false;
-                    }
-                }
-            } else if (accesseeType.matches(Type.dict)) {
-                if (!accessorType.matches(Type.str)) {
-                    this.reportError(
-                        expression.propertyName,
-                        `Type '${accessorType.name}' cannot be used to index into dictionaries, only strings are allowed as keys`
-                    );
-                    return false;
-                }
-            } else {
-                this.reportError(
-                    expression.propertyName,
-                    `Member access not allowed on type '${accessee.getType(this.env.types).name}'`,
-                    accessee
-                );
-                return false;
-            }
-    
-            return true;
-        }
-        else if (mode == "member" && typeof accessor == "string") {
-            let accesseeType = accessee.getType(this.env.types);
-            let definition = accesseeType.getPropertyDefinition(accessor);
-            if (definition == undefined) {
-                // todo: special error messages for if the namespace is a player action or game action or whatever
-                let name: string
-                if (accessee instanceof NamespaceValue) {
-                    name = `'${accessee.namespace.identifier}'`;
-                } else {
-                    name = accesseeType.name
-                }
-                this.reportError(
-                    expression.propertyName,
-                    `'${accessor}' is not a property of ${name}`,
-                    accessee
-                )
-                return false;
-            }
-
-            return true;
-        }
-        this.reportError(
-            expression, 
-            `(internal compiler error) Invalid state passed to validateSingleAccess: Requested mode '${mode}' but provided a ${accessor?.constructor.name} as an accessor`
-        );
-        return false;
-    }
-
-    /** Assumes the access has already been validated via `validateSingleAccess()` */
-    compileSingleAccessGet(
-        accessee: CodeValue, 
-        /** Pass in a TangibleValue for member access and a string for property access */
-        accessor: TangibleValue | string, 
-        expression: AccessExpression | BracketedAccessExpression, 
-        mode: "member" | "property", 
-        context: ExpressionContext
-    ): [CodeValue, CodeBlock[]] {
-        let code: CodeBlock[] = [];
-        if (mode == "member" && accessor instanceof TangibleValue) {
-            let tvp = context.perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider;
-    
-            let declaredAccesseeType = accessee.getType(this.env.types);
-            let accesseeType = declaredAccesseeType.getRuntimeType();
-
-            // Schema function values are stored as their mangled DF names in a
-            // dictionary.  Keep them as FunctionValues here so a subsequent
-            // `()` emits a dynamic Call Function/Start Process instead of
-            // treating the retrieved string as an ordinary value.
-            if (
-                accessee instanceof TangibleValue
-                && declaredAccesseeType.matches(Type.namespace)
-                && (declaredAccesseeType.data as NamespaceTypeData).namespace instanceof SourceNamespace
-            ) {
-                let namespace = (declaredAccesseeType.data as NamespaceTypeData).namespace as SourceNamespace;
-                let member = accessor instanceof StringValue && accessor.isCompileTimeConstant()
-                    ? accessor.value
-                    : undefined;
-                let definition = namespace.getDynamicFunctionDefinition?.(member);
-                if (definition != null) {
-                    return [new FunctionValue(definition, undefined, expression, {
-                        dictionary: accessee,
-                        key: accessor,
-                    }), code];
-                }
-            }
-    
-            // list accessing
-            if (accesseeType.matches(Type.list)) {
-                let tempVar = tvp.newTempVar(this.env.types.evaluateExpression(expression));
-    
-                let codeBlock = new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                    action: "GetListValue",
-                    args: [tempVar, accessee as TangibleValue, accessor]
-                })
-    
-                return [tempVar, [...code, codeBlock]];
-            }
-            // dict accessing
-            else if (accesseeType.matches(Type.dict)) {
-                let tempVar = tvp.newTempVar(this.env.types.evaluateExpression(expression));
-    
-                let codeBlock = new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                    action: "GetDictValue",
-                    args: [tempVar, accessee as TangibleValue, accessor]
-                })
-    
-                return [tempVar, [...code, codeBlock]];
-            }
-        } else if (mode == "property" && typeof accessor == "string") {
-            let accesseeType = accessee.getType(this.env.types);
-
-            let definition = accesseeType.getPropertyDefinition(accessor);
-            if (isFunctionDefinition(definition)) {
-                if (definition.runtimeNamespaceFunction && accessee instanceof TangibleValue) {
-                    return [new FunctionValue(definition, undefined, expression, {
-                        dictionary: accessee,
-                        key: new StringValue(accessor, expression.propertyName),
-                    }), code];
-                }
-                // Namespace members are not receiver methods.  Schema-backed
-                // namespaces happen to be tangible dictionary variables, so
-                // relying on tangibility alone would incorrectly prepend the
-                // namespace dictionary to ordinary namespace function calls.
-                let methodCallOf = (
-                    !accesseeType.matches(Type.namespace) && accessee instanceof TangibleValue
-                ) ? accessee : undefined;
-                return [new FunctionValue(definition, methodCallOf, expression), code];
-            }
-            else if (isValueDefinition(definition)) {
-                return definition.compile(this.getEvaluationContext(context.perSelectedMode));
-            }
-            else if (isNamespaceVariableDefinition(definition)) {
-                return definition.compile(this.getEvaluationContext(context.perSelectedMode));
-            }
-            else if (isPropertyDefinition(definition)) {
-                return definition.compileGet(this.getEvaluationContext(context.perSelectedMode), accessee);
-            }
-        }
-        return [new MissingValue(expression), code];        
-    }
-
-    /** Assumes the access has already been validated via `validateSingleAccess()` */
-    compileSingleAccessSet(
-        accessee: TangibleValue, 
-        /** Pass in a TangibleValue for member access and a string for property access */
-        accessor: TangibleValue | string, 
-        value: TangibleValue, 
-        mode: "member" | "property",
-        context: ExpressionContext
-    ): CodeBlock[] {
-        let declaredAccesseeType = accessee.getType(this.env.types);
-        let accesseeType = declaredAccesseeType.getRuntimeType();
-        if (mode == "member" && accessor instanceof TangibleValue) {
-            if (
-                declaredAccesseeType.matches(Type.namespace)
-                && (declaredAccesseeType.data as NamespaceTypeData).namespace instanceof SourceNamespace
-            ) {
-                let namespace = (declaredAccesseeType.data as NamespaceTypeData).namespace as SourceNamespace;
-                return this.compileSourceNamespaceDynamicSet(
-                    namespace,
-                    accessee,
-                    accessor,
-                    value,
-                    context,
-                );
-            }
-            if (accesseeType.matches(Type.list)) {
-                return [new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                    action: "SetListValue",
-                    args: [accessee,accessor,value]
-                })];
-            } else if (accesseeType.matches(Type.dict)) {
-                return [new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                    action: "SetDictValue",
-                    args: [accessee,accessor,value]
-                })];
-            }
-        } else if (mode == "property" && typeof accessor == "string") {
-            let definition = declaredAccesseeType.getPropertyDefinition(accessor);
-            if (isPropertyDefinition(definition)) {
-                return definition.compileSet(value, this.getEvaluationContext(context.perSelectedMode), accessee)
-            }
-            if (isNamespaceVariableDefinition(definition)) {
-                return definition.compileSet(value, this.getEvaluationContext(context.perSelectedMode));
-            }
-        }
-        return [];
-    }
-
-    /**
-     * Writes through a schema namespace's dictionary and keeps every known
-     * compile-time member in sync. Unknown keys deliberately retain ordinary
-     * dictionary behavior, matching the namespace specification's undefined
-     * dynamic-write semantics for keys that are not declared members.
-     */
-    private compileSourceNamespaceDynamicSet(
-        namespace: SourceNamespace,
-        dictionary: TangibleValue,
-        key: TangibleValue,
-        value: TangibleValue,
-        context: ExpressionContext,
-    ): CodeBlock[] {
-        let code: CodeBlock[] = [new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-            action: "SetDictValue",
-            args: [dictionary, key, value],
-        })];
-        let ctx = this.getEvaluationContext(context.perSelectedMode);
-
-        // A dictionary lookup yields a runtime copy/value, while static access
-        // uses a concrete mangled variable or a child dictionary variable. For
-        // each declared immediate member, mirror a matching runtime-key write
-        // to that concrete value. This also makes a later static read observe a
-        // preceding dynamic write.
-        for (const [name, definition] of Object.entries(namespace.members)) {
-            let target: TangibleValue | null = null;
-            if (isNamespaceVariableDefinition(definition)) {
-                let [compiled, targetCode] = definition.compile(ctx);
-                if (targetCode.length == 0 && compiled instanceof TangibleValue) {
-                    target = compiled;
-                }
-            } else {
-                let child = namespace.children.get(name);
-                if (child != undefined) {
-                    let compiled = this.env.types.getSourceNamespaceRuntimeValue(child);
-                    if (compiled instanceof TangibleValue) target = compiled;
-                }
-            }
-            if (target == null) continue;
-
-            code.push(
-                new ActionBlock(DFCodeblockName.IF_VARIABLE, {
-                    action: "=",
-                    args: [key, new StringValue(name)],
-                }),
-                new BracketBlock({type: BracketType.IF, direction: BracketDirection.OPEN}),
-                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                    action: "=",
-                    args: [target, value],
-                }),
-                new BracketBlock({type: BracketType.IF, direction: BracketDirection.CLOSE}),
-            );
-        }
-
-        // When the namespace itself is a known nested member, refresh every
-        // enclosing immediate dictionary. This makes mutation robust whether DF
-        // dictionaries preserve nested values by reference or by value.
-        if (namespace.runtimeBacked) {
-            let child: SourceNamespace = namespace;
-            let parent = namespace.parentSourceNamespace;
-            while (parent != null) {
-                let parentDictionary = this.env.types.getSourceNamespaceRuntimeValue(parent);
-                let childDictionary = this.env.types.getSourceNamespaceRuntimeValue(child);
-                if (
-                    parentDictionary instanceof TangibleValue
-                    && childDictionary instanceof TangibleValue
-                ) {
-                    code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                        action: "SetDictValue",
-                        args: [
-                            parentDictionary,
-                            new StringValue(child.identifier),
-                            childDictionary,
-                        ],
-                    }));
-                }
-                child = parent;
-                parent = parent.parentSourceNamespace;
-            }
-        }
+          new ActionBlock(DFCodeblockName.SELECT_OBJECT, {
+            action: definition.action?.name!,
+          }),
+        ];
+      } else {
+        // all other expressions
+        let [_, code] = this.compileExpression(e, exprContext);
         return code;
-    }
-
-    compileExpression(e: Expression | Token, context: ExpressionContext): [CodeValue, CodeBlock[]] {
-        let tvp = context.perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider;
-        // TODO: structure this and the compileStatement thing more like how the parser does stuff
-        if (e instanceof Expression && BooleanOperation.exprIsBooleanExpression(e)) {
-            // convert expression into BooleanOperation classes to make it easier to work with
-            let operationTree = BooleanOperation.generateFromExpression(e);
-            let simplified = BooleanOperation.simplify(operationTree);
-            let output = tvp.newTempVar(Type.num);
-            let code = [
-                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                    action: "=",
-                    args: [output, new NumberValue("0")]
-                }),
-                ...this.compileBooleanOperation(simplified, [
-                    new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                        action: "=",
-                        args: [output, new NumberValue("1")]
-                    })
-                ], context)
-            ];
-            return [output, code];
-        }
-        else if (e instanceof BinaryExpression) {
-            let [left, lCode] = this.compileExpression(e.left, context);
-            let [right, rCode] = this.compileExpression(e.right, context);
-            let [result, oprCode] = Operations.evaluateBinaryValue(
-                left, e.operator, right, 
-                this.getEvaluationContext(context.perSelectedMode)
-            )
-            return [result, [...lCode, ...rCode, ...oprCode]];
-        }
-        else if (e instanceof UnaryPrefixExpression) {
-            let [right, rCode] = this.compileExpression(e.right, context);
-            let [result, oprCode] = Operations.evaluateUnaryValue(
-                e.operator, right, 
-                this.getEvaluationContext(context.perSelectedMode)
-            )
-            return [result, [...rCode, ...oprCode]];
-        }
-        else if (e instanceof CallExpression) {
-            let [callee, preCode] = this.compileExpression(e.callee, context);
-
-            let definition: FunctionDefinition | null = null;
-            let methodCallOf: TangibleValue | undefined;
-            let runtimeNamespaceAccess: FunctionCallExtraInfo["runtimeNamespaceAccess"];
-            if (callee instanceof FunctionValue) {
-                definition = callee.definition;
-                methodCallOf = callee.methodCallOf;
-                runtimeNamespaceAccess = callee.runtimeNamespaceAccess;
-            } else if (callee instanceof NamespaceValue) {
-                if (callee.namespace.nameFunction) {
-                    definition = callee.namespace.nameFunction;
-                } else {
-                    this.reportError(e.callee, `'${callee.namespace.identifier}' cannot be called as a function`, callee);
-                }
-            } 
-            // error case; no definition could be found
-            else {
-                this.reportError(e.callee, `Type '${callee.getType(this.env.types).name}' cannot be called as a function`, callee);
-            }
-
-            if (definition) {
-                if (!definition.runtimeNamespaceFunction && this.isProcessFunctionDefinition(definition)) {
-                    this.reportError(e.callee, "Processes must be invoked with 'start'");
-                    return [new MissingValue(e), preCode];
-                }
-                let [value, code] = this.compileCallExpression(e, definition, context, {methodCallOf, runtimeNamespaceAccess});
-                return [value, [...preCode, ...code]];
-            }
-            else {
-                return [new MissingValue(e), [...preCode]];
-            }
-        }
-        else if (e instanceof CallOrStartExpression) {
-            let isProcess = e.keyword.type == TokenType.START;
-            let resolvedTarget = e.callee instanceof AtomicExpression
-                ? this.env.types.resolveIdentifier(e.callee.token)
-                : null;
-            let isSourceNamespaceFunctionTarget = (
-                isFunctionDefinition(resolvedTarget)
-                && resolvedTarget.astNode != null
-                && this.env.types.sourceNamespaceFunctionStatements.has(
-                    resolvedTarget.astNode,
-                )
-            );
-            let legacyTarget = e.callee instanceof AtomicExpression
-                && (e.callee.token.type == TokenType.IDENTIFIER || e.callee.token.type == TokenType.STRING_LITERAL)
-                && (
-                    e.callee.token.type == TokenType.STRING_LITERAL
-                    || !isSourceNamespaceFunctionTarget
-                );
-
-            // Preserve the established `call`/`start` behavior for literal and
-            // percent-code names while allowing namespace/member expressions.
-            if (legacyTarget && e.callee instanceof AtomicExpression) {
-                let target = e.callee.token;
-                let [pcErrors, pcode] = this.pcodeParser.parse(target.value);
-                for (let err of pcErrors) {
-                    this.errors.push(new TCNodePCodeError(target, err, ErrorType.COMPILER));
-                }
-                let isConstant = pcode.length == 1 && pcode[0] instanceof SegmentPCode;
-                let definition = this.env.types.getUserFuncDef(isProcess, target.value, !isConstant);
-                if (definition) {
-                    return this.compileCallExpression(e, definition, context);
-                }
-                this.reportError(
-                    target,
-                    `Invalid ${isProcess ? "process" : "function"} name '${target.value}'`,
-                );
-                return [new MissingValue(e), []];
-            }
-
-            let [callee, preCode] = this.compileExpression(e.callee, context);
-            if (!(callee instanceof FunctionValue)) {
-                this.reportError(
-                    e.callee,
-                    `Type '${callee.getType(this.env.types).name}' cannot be ${isProcess ? "started as a process" : "called as a function"}`,
-                    callee,
-                );
-                return [new MissingValue(e), preCode];
-            }
-
-            let definition = callee.definition;
-            if (!definition.runtimeNamespaceFunction) {
-                let definitionIsProcess = this.isProcessFunctionDefinition(definition);
-                if (isProcess != definitionIsProcess) {
-                    this.reportError(
-                        e.callee,
-                        isProcess
-                            ? "This namespace member is a function; call it without 'start'"
-                            : "This namespace member is a process; invoke it with 'start'",
-                    );
-                    return [new MissingValue(e), preCode];
-                }
-            }
-            let [value, code] = this.compileCallExpression(e, definition, context, {
-                methodCallOf: callee.methodCallOf,
-                runtimeNamespaceAccess: callee.runtimeNamespaceAccess,
-            });
-            return [value, [...preCode, ...code]];
-        }
-        else if (e instanceof BracketedAccessExpression) {
-            let [accessee, accesseeCode] = this.compileExpression(e.accessee, context);
-            let [accessor, accessorCode] = this.compileExpression(e.propertyName, context);
-            if (!this.validateSingleAccess(accessee, accessor, e, "member")) 
-                return [new MissingValue(e), []];
-            let [val, accessCode] = this.compileSingleAccessGet(accessee, accessor as TangibleValue, e, "member", context);
-            return [val, [...accesseeCode, ...accessorCode, ...accessCode]];
-        }
-        else if (e instanceof AccessExpression) {
-            let [accessee, accessorCode] = this.compileExpression(e.accessee, context);
-            let propertyName = e.propertyName.value;
-
-            if (!this.validateSingleAccess(accessee, propertyName, e, "member")) 
-                return [new MissingValue(e), []];
-
-            let [val, accessCode] = this.compileSingleAccessGet(accessee, propertyName, e, "property", context);
-
-            return [val, [...accessorCode, ...accessCode]];
-        }
-        else if (e instanceof VariableExpression) {
-            // throw error for type annotation in bad place
-            if (
-                e.assignedType &&
-                !(
-                    // in here go cases where type annotation **is** allowed
-                    (e.parent && e.parent instanceof AssignmentStatement && e.keyInParent == 'leftValues')
-                    || (e.parent && e.parent instanceof ExpressionStatement)
-                )
-            ) {
-                this.reportError(
-                    e.assignedType,
-                    `Variable type annotation is not allowed here`
-                );
-            }
-
-            // 
-            return [new VariableValue(e.name.value, VariableScope[TokenType[e.scope.type]], undefined, e), []];
-        }
-        else if (e instanceof ListExpression) {
-            let code: CodeBlock[] = [];
-            let tempVar = tvp.newTempVar(this.env.types.evaluateExpression(e));
-            
-            let contents: TangibleValue[] = [];
-            for (const element of e.elements) {
-                let [value, valueCode] = this.compileExpression(element, context);
-                code.push(...valueCode);
-                if (!(value instanceof TangibleValue)) {
-                    this.reportError(element, `${value.constructor.name} cannot be stored in lists`, value);
-                    continue;
-                }
-                contents.push(value);
-            }
-
-            if (contents.length > LIST_LENGTH_LIMIT)
-                this.reportError(e, `List length (${contents.length}) exceeds DiamondFire's list length limit of ${LIST_LENGTH_LIMIT}`);
-
-            return [tempVar, [...code, ...this.compileListContents(tempVar, contents)]];
-        }
-        else if (e instanceof DictionaryExpression) {
-            let code: CodeBlock[] = []
-            let tempVar = tvp.newTempVar(this.env.types.evaluateExpression(e));
-            let keysTempVar = tvp.newTempVar(Type.list(Type.str));
-            let valuesTempVar = tvp.newTempVar(Type.list(Type.any));
-            let keysContents: TangibleValue[] = [];
-            let valuesContents: TangibleValue[] = [];
-
-            for (const entry of e.entries) {
-                // variable key
-                if (entry.key instanceof GroupExpression) {
-                    let [key, keyCode] = this.compileExpression(entry.key, context);
-                    let keyType = key.getType(this.env.types);
-                    if (keyType.matches(Type.str) && key instanceof TangibleValue) {
-                        code.push(...keyCode);
-                        keysContents.push(key);
-                    } else {
-                        this.reportError(entry.key,`Expected type 'str' for dictionary key (got '${keyType.name}')`);
-                        continue;
-                    }
-                } 
-                // constant key
-                else {
-                    keysContents.push(new StringValue(entry.key.value, entry.key));
-                }
-
-                // value
-                let [value, valueCode] = this.compileExpression(entry.value, context);
-                if (!(value instanceof TangibleValue)) {
-                    this.reportError(entry, `${value.constructor.name} cannot be stored in lists`, value);
-                    continue;
-                }
-                code.push(...valueCode);
-                valuesContents.push(value);
-            }
-
-            if (keysContents.length > DICT_LENGTH_LIMIT)
-                this.reportError(e, `Dictionary length (${keysContents.length}) exceeds DiamondFire's dictionary length limit of ${DICT_LENGTH_LIMIT}`);
-
-            let keysCode = this.compileListContents(keysTempVar, keysContents);
-            let valuesCode = this.compileListContents(valuesTempVar, valuesContents);
-
-            return [tempVar, [...code, ...keysCode, ...valuesCode, new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                action: "CreateDict",
-                args: [tempVar, keysTempVar, valuesTempVar]
-            })]];
-        }
-        else if (e instanceof AtomicExpression) {
-            return this.compileExpression(e.token, context);
-        } 
-        else if (e instanceof Token) {
-            switch (e.type) {
-                // identifier resolution all happens here
-                case TokenType.IDENTIFIER:
-                case TokenType.NAMESPACE: {
-                    let resolved = this.env.types.resolveIdentifier(e);
-                    if (resolved instanceof Namespace) {
-                        if (resolved instanceof SourceNamespace) {
-                            return [this.env.types.getSourceNamespaceRuntimeValue(resolved, e), []];
-                        }
-                        return [new NamespaceValue(resolved, e), []];
-                    } else if (isFunctionDefinition(resolved)) {
-                        return [new FunctionValue(resolved, undefined, e), []];
-                    } else if (isValueDefinition(resolved)) {
-                        return resolved.compile(this.getEvaluationContext(context.perSelectedMode));
-                    } else if (isNamespaceVariableDefinition(resolved)) {
-                        return resolved.compile(this.getEvaluationContext(context.perSelectedMode));
-                    } else if (isVariableEntry(resolved)) {
-                        return [new VariableValue(resolved.id.name, resolved.id.scope, resolved.type ?? undefined, e), []];
-                    }
-                    this.reportError(
-                        e,
-                        `Could not resolve identifier '${e.value}'`
-                    );
-                    return [new MissingValue(e), []];
-                }
-                case TokenType.NUMERIC_LITERAL: {
-                    return [new NumberValue(tcParseNumber(e.value).toString(),e), []];
-                }
-                case TokenType.NUMEXPR_LITERAL: {
-                    if (e.value.length > STRING_LENGTH_LIMIT)
-                        this.reportError(e, `Numeric literal length (${e.value.length}) exceeds DiamondFire's string length limit of ${STRING_LENGTH_LIMIT}`);
-                    let [errors, parsed] = this.pcodeParser.parse(e.value);
-                    if (errors.length > 0) {
-                        for (let err of errors) {
-                            this.errors.push(new TCNodePCodeError(e,err,ErrorType.COMPILER));
-                        }
-                        return [new MissingValue(e), []];
-                    } else {
-                        return [new NumberValue(parsed,e), []];
-                    }
-                }
-                case TokenType.STRING_LITERAL: {
-                    if (e.value.length > STRING_LENGTH_LIMIT)
-                        this.reportError(e, `String length (${e.value.length}) exceeds DiamondFire's string length limit of ${STRING_LENGTH_LIMIT}`);
-                    
-                    let [errors, parsed] = this.pcodeParser.parse(e.value);
-                    if (errors.length > 0) {
-                        for (let err of errors) {
-                            this.errors.push(new TCNodePCodeError(e,err,ErrorType.COMPILER));
-                        }
-                        return [new MissingValue(e), []];
-                    } else if (parsed.length == 1 && parsed[0] instanceof SegmentPCode) {
-                        return [new StringValue(e.value), []];
-                    } else {
-                        return [new StringValue(parsed,e), []];
-                    }
-                }
-                case TokenType.STYLED_LITERAL: {
-                    if (e.value.length > STRING_LENGTH_LIMIT)
-                        this.reportError(e, `Styled text length (${e.value.length}) exceeds DiamondFire's string length limit of ${STRING_LENGTH_LIMIT}`);
-                    return [new StyledTextValue(e.value,e), []];
-                }
-                default: {
-                    return [new MissingValue(e), []];
-                }
-            }
-        }
-        else if (e instanceof TypecastExpression) {
-            let [value, valueCode] = this.compileExpression(e.left, context);
-            let type = this.env.types.evaluateExplicitType(e.type, {reportErrors: true});
-            // this is definitely in the runnings for "most sinful code i've ever written"
-            value.getType = () => type;
-            return [value, valueCode];
-        }
-        else if (e instanceof GroupExpression) {
-            return this.compileExpression(e.expression, context);
-        }
-        else if (e instanceof PerSelectedExpression) {
-            return this.compileExpression(e.expression, {...context, perSelectedMode: true});
-        }
-        // compileStatement() handles the actual compilation of selection statements
-        else if (e instanceof SelectionExpression) {
-            if (!(e.parent instanceof CallExpression)) {
-                this.reportError(e, `Expected argument list following action name`);
-                return [new MissingValue(), []];
-            }
-            this.reportError(e.parent, `'${e.keyword.value}' must be a standalone statement`);
-            return [new MissingValue(), []];
-        }
-        else if (e instanceof MissingExpression) {
-            return [new MissingValue(e), []];
-        }
-        throw new Error(`no idea how to compile this: ${e.constructor.name}`);
-    }
-
-    compileIfStatement(condition: Expression, innerCode: CodeBlock[], invertEntireCondition: boolean, exprContext: ExpressionContext, hasElseAttached: boolean = false): CodeBlock[] {
-        let tvp = exprContext.perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider;
-        let operationTree: BooleanOperation | undefined;
-        let realCondition = condition.getRealExpression();
-        if (BooleanOperation.exprIsBooleanExpression(realCondition)) {
-            operationTree = BooleanOperation.generateFromExpression(realCondition);
-        }
-        if (invertEntireCondition) {
-            operationTree = new BooleanOperation(TokenType.BANG, operationTree ?? condition);
-        }
-
-        let directInsertBoolOpMode = false;
-        let simplifiedBooleanExpression: BooleanOperation | Expression;
-        if (operationTree) {
-            simplifiedBooleanExpression = BooleanOperation.simplify(operationTree);
-            if (!hasElseAttached && simplifiedBooleanExpression instanceof BooleanOperation && BooleanOperation.isSinglePath(simplifiedBooleanExpression)) {
-                directInsertBoolOpMode = true;
-            }
-        } else {
-            simplifiedBooleanExpression = condition;
-            directInsertBoolOpMode = true;
-        }
-
-        if (directInsertBoolOpMode) {
-            return this.compileBooleanOperation(simplifiedBooleanExpression, innerCode, exprContext);
-        } else {
-            let value = tvp.newTempVar(Type.num);
-            let valueCode = [
-                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                    action: "=",
-                    args: [value, new NumberValue("0")]
-                }),
-                ...this.compileBooleanOperation(simplifiedBooleanExpression, [
-                    new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                        action: "=",
-                        args: [value, new NumberValue("1")]
-                    })
-                ], exprContext)
-            ];
-
-            return [
-                ...valueCode,
-                new ActionBlock(DFCodeblockName.IF_VARIABLE,{
-                    action: "!=",
-                    args: [value, new NumberValue("0")],
-                }),
-                new BracketBlock({type: BracketType.IF, direction: BracketDirection.OPEN}),
-                    ...innerCode,
-                new BracketBlock({type: BracketType.IF, direction: BracketDirection.CLOSE}),
-            ];
-        }
-    }
-
-    validateDeclareStatement(declareStatement: DeclareStatement, allowInitialization: boolean) {
-        let keyword = declareStatement.keyword;
-        let s = declareStatement.subStatement;
-        let varExpressions: Expression[] = [];
-            
-        // error for applying 'declare' to invalid places
-        if (s instanceof ExpressionStatement && s.expression instanceof VariableExpression) {
-            varExpressions.push(s.expression);
-        } else if (s instanceof AssignmentStatement) {
-            varExpressions = s.leftValues;
-            if (!allowInitialization && s.rightValue) {
-                this.reportError(s.rightValue, "Variables cannot be assigned values here. Move this declaration into an event, function, or process.");
-            }
-        } else {
-            this.reportError(keyword,"'declare' keyword cannot be used here");
-        }
-
-        for (let v of varExpressions) {
-            if (v instanceof VariableExpression) {
-                if (v.scope.type == TokenType.LINE) {
-                    this.reportError(v, "Line variables cannot be globally declared");
-                }
-                let varId = v.getVarId();
-                let varEntries = this.env.types.globalFrame.variables.get(varId.name)?.get(varId.scope);
-                if (varEntries && varEntries.length > 1) {
-                    this.reportError(v, `${toNameCase(v.scope.value)} variable '${varId.name}' declared in multiple places`);
-                }
-            }
-            else if (v instanceof AtomicExpression && v.token.type == TokenType.IDENTIFIER) {
-                this.reportError(v, "Variables must specify their scope to be globally declared");
-            }
-            else {
-                this.reportError(v, "'declare' keyword cannot be applied to this value");
-            }
-        }
-    }
-
-    compileStatement = (s: Statement, context: StatementContext): CodeBlock[] => {
-        let tvp = context.perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider;
-
-        if (s instanceof DeclareStatement) {
-            this.validateDeclareStatement(s, true);
-            s = s.subStatement;
-        }
-
-        let exprContext: ExpressionContext = {perSelectedMode: context.perSelectedMode};
-        if (s instanceof ExpressionStatement) {
-            let e = s.expression;
-
-            // syntactic sugar for argless control functions
-            if (e instanceof AtomicExpression && e.token.type == TokenType.IDENTIFIER) {
-                let resolved = this.env.types.resolveIdentifier(e.token);
-                let blockName: string | undefined;
-                if (resolved == GLOBAL_SCOPE_INJECTIONS.wait) {
-                    blockName = "Wait";
-                } else if (resolved == GLOBAL_SCOPE_INJECTIONS.endthread) {
-                    blockName = "End";
-                } else if (resolved == GLOBAL_SCOPE_INJECTIONS.endallthreads) {
-                    blockName = "EndAllThreads";
-                }
-                if (blockName) {
-                    return [new ActionBlock(DFCodeblockName.CONTROL,{
-                        action: blockName
-                    })];
-                }
-            }
-
-            // shadowing error
-            if (e instanceof VariableExpression) this.shadowingCheck(e);
-            
-            // other argless control blocks
-            // selection statements
-            if (e instanceof CallExpression && e.callee instanceof SelectionExpression) {
-                let selExpr = e.callee;
-                let definitionBank = selExpr.keyword.type == TokenType.SELECT ? SELECT_ACTIONS : FILTER_ACTIONS
-                if (!(selExpr.name.value in definitionBank)) {
-                    this.reportError(selExpr.name, `Invalid ${selExpr.keyword.value} action '${selExpr.name.value}'`);
-                    return [];
-                }
-                let definition = definitionBank[selExpr.name.value];
-
-                let invert = e.callee.nameInverterToken != null;
-
-                // condition actions
-                if (definition.action?.hasSubActions) {
-                    let selAction = definition.action!;
-                    if (e.args.elements.length > 1 || e.args.hasTrailingDelimiter) {
-                        this.reportError(e.args, `Select action condition cannot have multiple arguments`);
-                        return [];
-                    } else if (e.args.elements.length == 0) {
-                        this.reportError(e.args, `Expected condition inside parentheses`);
-                        return [];
-                    }
-                    let conditionExpr = e.args.elements[0];
-                    let oprTree = BooleanOperation.generateIfPossible(conditionExpr);
-                    if (e.callee.inverterToken) invert = !invert;
-                    if (invert) oprTree = new BooleanOperation(TokenType.BANG, oprTree);
-                    if (oprTree instanceof BooleanOperation) oprTree = BooleanOperation.simplify(oprTree);
-                    
-                    let code: CodeBlock[] = [];
-
-                    // create new selection if the action says to do that
-                    // if this select action ends up being one where you can use a direct
-                    // PlayersCond/EntitiesCond block, the optimizer will handle actually doing that
-                    if (selAction.name == "PlayersCond" || selAction.name == "EntitiesCond") {
-                        code.push(new SubActionBlock(DFCodeblockName.SELECT_OBJECT, {
-                            action: selAction.name == "PlayersCond" ? "AllPlayers" : "AllEntities",
-                        }))
-                    }
-
-                    const recurse = (opr: BooleanOperation | Expression, invertAtomic?: boolean) => {
-                        if (opr instanceof BooleanOperation && opr.operation != TokenType.BOOL_OR) {
-                            if (opr.operation == TokenType.BOOL_AND) {
-                                recurse(opr.a);
-                                recurse(opr.b!);
-                            }
-                            else if (opr.operation == TokenType.BANG) {
-                                recurse(opr.a, true);
-                            }
-                        } else {
-                            let value: CodeValue;
-                            let valueCode: CodeBlock[];
-                            let errorNode: ASTNode;
-
-                            if (opr instanceof Expression) {
-                                // if the condition could be inlined in the filter block, the optimizer will handle that
-                                [value, valueCode] = this.compileExpression(opr, {...exprContext, perSelectedMode: true});
-                                errorNode = opr;
-                                if (!(value instanceof TangibleValue)) {
-                                    this.reportError(opr, `Cannot check truthiness of '${value.constructor.name}'`, value);
-                                    return;
-                                }
-                            } else {
-                                value = this.perSelectedTempVarProvider.newTempVar(Type.num);
-                                valueCode = [
-                                    new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                                        action: "=",
-                                        args: [value as VariableValue, new NumberValue("0")]
-                                    }),
-                                    ...this.compileBooleanOperation(opr, [
-                                        new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                                            action: "=",
-                                            args: [value as VariableValue, new NumberValue("1")]
-                                        })
-                                    ], {...exprContext, perSelectedMode: true})
-                                ]
-                            }
-
-                            code.push(
-                                ...valueCode,
-                                new SubActionBlock(DFCodeblockName.SELECT_OBJECT, {
-                                    action: "FilterCondition",
-                                    subAction: "!=",
-                                    args: [value as TangibleValue, new NumberValue("0")],
-                                    not: invertAtomic,
-                                })
-                            );
-                        }
-                    }
-                    recurse(oprTree);
-                    return code;
-                } 
-                // normal actions
-                else {
-                    let [_, code] = this.compileCallExpression(e, definition, exprContext);
-                    if (e.callee.inverterToken != null) {
-                        this.reportError(e.callee.inverterToken,"Inverter (!) must be placed before the action name for this action")
-                    }
-                    if (invert) {
-                        if (!definition.action || !(INVERTIBLE_SELECT_ACTIONS.includes(definition.action.name))) {
-                            this.reportError(e.callee.nameInverterToken ?? e.callee,`Selection action '${definition.name}' cannot be inverted`);
-                        }
-                        (code[code.length-1] as ActionBlock).not = true;
-                    }
-                    return code;
-                }
-            // syntactic sugar for argless selection expresions
-            } else if (e instanceof SelectionExpression) {
-                let selExpr = e;
-                let definitionBank = selExpr.keyword.type == TokenType.SELECT ? SELECT_ACTIONS : FILTER_ACTIONS
-                if (!(selExpr.name.value in definitionBank)) {
-                    this.reportError(selExpr.name, `Invalid ${selExpr.keyword.value} action '${selExpr.name.value}'`);
-                    return [];
-                }
-                let definition = definitionBank[selExpr.name.value];
-
-                if (
-                    definition.signatures[0]?.params.length > 0 
-                    || Object.keys(definition.action!.tags).length > 0
-                    || definition.action?.hasSubActions
-                ) {
-                    let reqStr = definition.action?.hasSubActions ? "a condition wrapped in parentheses" : "arguments";
-                    this.reportError(selExpr.name, `${upperFirst(selExpr.keyword.value)} action '${selExpr.name.value}' requires ${reqStr}`);
-                    return [];
-                }
-
-                return [
-                    new ActionBlock(DFCodeblockName.SELECT_OBJECT,{
-                        action: definition.action?.name!,
-                    })
-                ]
-            } else {
-                // all other expressions
-                let [_, code] = this.compileExpression(e, exprContext);
-                return code;
-            }
-        }
-        else if ((s instanceof AssignmentStatement && s.isErrorFree()) || s instanceof IncrementStatement) {
-            let rawValue: CodeValue;
-            let values: CodeValue[];
-            let assigneeExpressions: Expression[];
-
-            // assignment statement: proceed as normal
-            let valueCode: CodeBlock[];
-            if (s instanceof AssignmentStatement) {
-                [rawValue, valueCode] = this.compileExpression(s.rightValue, exprContext);
-                if (rawValue instanceof MultiValue) {
-                    values = [...rawValue.values];
-                } else {                
-                    values = [rawValue];
-                }
-                for (let v of values) {
-                    let vType = v.getType(this.env.types);
-                    if (!Type.assignableTypes.has(vType.name)){
-                        this.reportError(
-                            s.rightValue,
-                            `Type '${vType.name}' cannot be stored in variables`
-                        );
-                        return [];
-                    }
-        
-                    if (!(v instanceof TangibleValue)) {
-                        this.reportError(
-                            v.astNode ?? s.rightValue,
-                            `${v.constructor.name} cannot be stored in variables`,
-                            v
-                        );
-                        
-                        return [];
-                    }
-                }
-                assigneeExpressions = s.leftValues;
-            } 
-            // increment statement: treat this the same as `value += 1`;
-            else {
-                assigneeExpressions = [s.target];
-                rawValue = new NumberValue("1");
-                values = [rawValue];
-                valueCode = [];
-            }
-
-            let code: CodeBlock[] = [...valueCode];
-
-            for (let i = 0; i < assigneeExpressions.length; i++) {
-                let assigneeExpr = assigneeExpressions[i];
-                if (i >= values.length) {
-                    if (rawValue instanceof MultiValue && rawValue.overflowType != Type.void) {
-                        let newVal = tvp.newTempVar((rawValue as MultiValue).overflowType)
-                        values[i] = newVal;
-                        (valueCode[valueCode.length-1] as ActionBlock).args.push(newVal); // TODO: this is awful
-                    } else {
-                        this.reportError(assigneeExpr, `Tried to set ${i+1} or more variables, but only ${values.length} value(s) were provided.`);
-                        continue;
-                    }
-                }
-
-                if (assigneeExpr instanceof VariableExpression) this.shadowingCheck(assigneeExpr);
-
-                // generate path
-                let baseExpression: Expression | undefined;
-                let path: {accesseeType: Type, accessMode: "property" | "member", accessor: TangibleValue | string, expr: AccessExpression | BracketedAccessExpression}[] = [];
-                let consumedCompileTimeNamespacePath = false;
-                const generatePath = (expr: Expression, typeOverride?: Type) => {
-                    expr = expr.getRealExpression();
-                    if (expr instanceof TypecastExpression) {
-                        generatePath(expr.left, this.env.types.evaluateExplicitType(expr.type))
-                    } else if (expr instanceof BracketedAccessExpression) {
-                        let [accessor, keyCode] = this.compileExpression(expr.propertyName, exprContext);
-                        if (!(accessor instanceof TangibleValue)) return;
-                        code.push(...keyCode);
-                        path.unshift({
-                            accesseeType: typeOverride ?? this.env.types.evaluateExpression(expr.accessee),
-                            accessMode: "member",
-                            accessor,
-                            expr,
-                        });
-                        generatePath(expr.accessee);
-                    } else if (expr instanceof AccessExpression) {
-                        path.unshift({
-                            accesseeType: typeOverride ?? this.env.types.evaluateExpression(expr.accessee),
-                            accessMode: "property",
-                            accessor: expr.propertyName.value,
-                            expr
-                        })
-                        generatePath(expr.accessee);
-                    } else {
-                        baseExpression = expr;
-                    }
-                }
-                generatePath(assigneeExpr);
-                if (baseExpression == undefined) return [];
-
-                // compile path
-                const walkPath = (currentAccessee: CodeValue, pathIndex: number) => {
-                    if (!(currentAccessee instanceof TangibleValue)) {
-                        // Unschema'd source namespaces are compile-time-only
-                        // values. They can still be the first segment of a
-                        // qualified static assignment such as
-                        // `physics.gravity = -9.8`; consume that property and
-                        // continue with its concrete mangled variable.
-                        if (
-                            currentAccessee instanceof NamespaceValue
-                            && pathIndex < path.length
-                            && path[pathIndex].accessMode == "property"
-                        ) {
-                            let segment = path[pathIndex];
-                            if (!this.validateSingleAccess(currentAccessee, segment.accessor, segment.expr, "member")) {
-                                return;
-                            }
-                            let [child, getterCode] = this.compileSingleAccessGet(
-                                currentAccessee,
-                                segment.accessor,
-                                segment.expr,
-                                segment.accessMode,
-                                exprContext,
-                            );
-                            code.push(...getterCode);
-                            // The resulting value replaces the namespace
-                            // segment in the assignment path. This leaves the
-                            // ordinary variable/property setter below to
-                            // handle the rest of the assignment uniformly.
-                            path.splice(pathIndex, 1);
-                            consumedCompileTimeNamespacePath = true;
-                            walkPath(child, pathIndex);
-                            return;
-                        }
-                        this.reportError(
-                            path[pathIndex]?.expr.accessee ?? currentAccessee.astNode ?? assigneeExpr,
-                            `This value cannot be assigned to`,
-                            currentAccessee
-                        );
-                        return;
-                    }
-
-                    let accessor = path[pathIndex]?.accessor;
-                    if (path.length != 0 && !this.validateSingleAccess(currentAccessee, accessor, path[pathIndex].expr, "member")) 
-                        return [];
-
-
-                    // recursively generate accessor code
-                    if (pathIndex < path.length-1) {
-                        let [child, getterCode] = this.compileSingleAccessGet(currentAccessee,accessor,path[pathIndex].expr,path[pathIndex].accessMode,exprContext)
-                        if (!(child instanceof TangibleValue)) {
-                            this.reportError(
-                                path[pathIndex]?.expr.accessee ?? child.astNode ?? assigneeExpr,
-                                `This value cannot be assigned to`,
-                                child
-                            );
-                            return;
-                        }
-                        code.push(...getterCode);
-                        walkPath(child, pathIndex+1);
-                        code.push(...this.compileSingleAccessSet(currentAccessee,accessor,child,path[pathIndex].accessMode,exprContext))
-                    } 
-                    // base case: actually modify the value
-                    else {
-                        if (!(values[i] instanceof TangibleValue)) {
-                            this.reportError(
-                                values[i].astNode ?? (s instanceof AssignmentStatement ? s.rightValue[i] : s), 
-                                "This value cannot be stored in variables"
-                            );
-                            return;
-                        }
-                        let val = values[i] as TangibleValue;
-
-                        // incrementor operators
-                        if (s.operator.type != TokenType.EQUALS) {
-                            let incrementBase: TangibleValue;
-                            if (path.length == 0) {
-                                incrementBase = currentAccessee;
-                            } else {
-                                let [child, getterCode] = this.compileSingleAccessGet(currentAccessee,accessor,path[pathIndex].expr,path[pathIndex].accessMode,exprContext)
-                                if (!(child instanceof TangibleValue)) {
-                                    this.reportError(
-                                        path[pathIndex]?.expr.accessee ?? child.astNode ?? assigneeExpr,
-                                        `This value cannot be assigned to`,
-                                        child
-                                    );
-                                    return;
-                                }
-                                code.push(...getterCode);
-                                incrementBase = child;
-                            }
-                            let [newValue, newCode] = Operations.evaluateBinaryValue(incrementBase, s.operator, val, this.getEvaluationContext(), s instanceof IncrementStatement)
-                            if (!(newValue instanceof TangibleValue)) return;
-                            val = newValue;
-                            code.push(...newCode);
-                        }
-        
-                        // type validation
-                        let expectedType: Type = Type.any;
-                        if (assigneeExpr instanceof VariableExpression && assigneeExpr.assignedType) {
-                            expectedType = this.env.types.evaluateExplicitType(assigneeExpr.assignedType.type)
-                        } else if (path.length == 0 && currentAccessee instanceof VariableValue) {
-                            expectedType = currentAccessee.getType(this.env.types);
-                        } else {
-                            expectedType = this.env.types.evaluateExpression(assigneeExpr);
-                        }
-                        let resultType = val.getType(this.env.types);
-                        if (!resultType.isAssignableTo(expectedType)) {
-                            this.reportError(val.astNode ?? assigneeExpr, `Type '${resultType}' is not assignable to type '${expectedType}'`);
-                        }
-
-                        // if this is setting a variable without a path, set directly
-                        if (path.length == 0) {
-                            if (!(
-                                (assigneeExpr instanceof VariableExpression)
-                                || (assigneeExpr instanceof AtomicExpression && currentAccessee instanceof VariableValue)
-                                || (consumedCompileTimeNamespacePath && currentAccessee instanceof VariableValue)
-                            )) {
-                                this.reportError(
-                                    assigneeExpr, 
-                                    currentAccessee instanceof GameValueValue ?
-                                        `Game values cannot be assigned to. Use an action instead.`
-                                        : `Left-hand side of an assignment statement must be a variable or an access expression`,
-                                    currentAccessee
-                                )
-                                return;
-                            }
-
-                            // An unqualified/imported namespace variable is
-                            // compiled as a normal global VariableValue. Route
-                            // assignments through its definition anyway so a
-                            // schema dictionary stays synchronized with the
-                            // statically named variable.
-                            let realAssignee = assigneeExpr.getRealExpression();
-                            if (
-                                realAssignee instanceof AtomicExpression
-                                && (realAssignee.token.type == TokenType.IDENTIFIER || realAssignee.token.type == TokenType.NAMESPACE)
-                            ) {
-                                let definition = this.env.types.resolveIdentifier(realAssignee.token);
-                                if (isNamespaceVariableDefinition(definition)) {
-                                    code.push(...definition.compileSet(val, this.getEvaluationContext(context.perSelectedMode)));
-                                    return;
-                                }
-                            }
-                            
-                            code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                                action: "=",
-                                args: [currentAccessee,val]
-                            }));
-                        }
-                        // otherwise do the type-specific behavior
-                        else {
-                            code.push(...this.compileSingleAccessSet(currentAccessee,accessor,val,path[pathIndex].accessMode,exprContext))
-                        }
-                    }
-                }
-                let [baseValue, baseCode] = this.compileExpression(baseExpression, exprContext);
-                code.push(...baseCode);
-                walkPath(baseValue, 0);
-            }
-            return code;
-        }
-        else if (s instanceof SingleKeywordStatement) {
-            let action: string | null = null;
-            switch (s.keyword.type) {
-                case TokenType.BREAK: {action = "StopRepeat"; break;}
-                case TokenType.CONTINUE: {action = "Skip"; break;}
-            }
-            if (action) {
-                return [new ActionBlock(DFCodeblockName.CONTROL,{action})];
-            }
-        }
-        else if (s instanceof ReturnStatement) {
-            let code: CodeBlock[] = [];
-            if (s.values.length > 0) {
-                let expectedValueAmount = context.lineEntry.returnTypes?.length ?? 0
-                let actualValueAmount = s.values.length;
-                if (context.lineEntry.returnTypes == null) {
-                    this.reportError(s.values[0], `Values cannot be returned from a ${context.lineEntry.headerType.toLowerCase()}`);
-                    return [];
-                }
-                else if (actualValueAmount != expectedValueAmount) {
-                    this.reportError(s.keyword, `Expected ${expectedValueAmount} return value${ps(expectedValueAmount)}, got ${actualValueAmount}`);
-                }
-
-                let values: TangibleValue[] = [];
-                for (let i = 0; i < s.values.length && i < context.lineEntry.returnTypes.length; i++) {
-                    let valueExpr = s.values[i];
-                    let [value, valueCode] = this.compileExpression(valueExpr, exprContext);
-                    if (!(value instanceof TangibleValue)) {
-                        this.reportError(valueExpr, `${value.constructor.name} cannot be returned from functions`);
-                        continue;
-                    }
-                    let valType = value.getType(this.env.types);
-                    let expectedType = context.lineEntry.returnTypes[i];
-                    if (!valType.isAssignableTo(expectedType)) {
-                        this.reportError(valueExpr, `Expected type ${expectedType} for this return value, got ${valType}`);
-                    }
-                    values.push(value);
-                    code.push(
-                        ...valueCode,
-                        new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                            action: "=",
-                            args: [
-                                new VariableValue(`@__TC_RET_${i}`, VariableScope.LINE),
-                                value
-                            ]
-                        })
-                    );
-                }
-            }
-            code.push(new ActionBlock(DFCodeblockName.CONTROL,{
-                action: "Return"
-            }));
-            return code;
-        }
-        else if (s instanceof IfStatement) {
-            // compile condition anyway so errors are still reported
-            if (!s.chunk) {
-                this.compileExpression(s.condition, exprContext);
-                return [];
-            };
-
-            let innerIfCode = s.chunk.statements.map(child => this.compileStatement(child,context)).flat()
-            let code: CodeBlock[] = this.compileIfStatement(s.condition, innerIfCode, s.inverterToken != null, exprContext, s.elseContents != null);
-
-            if (s.elseContents) {
-                let elseContentsCode: CodeBlock[] = [];
-
-                if (s.elseContents instanceof IfStatement) {
-                    elseContentsCode = this.compileStatement(s.elseContents, context);
-                } else {
-                    elseContentsCode = s.elseContents.statements.map(child => this.compileStatement(child,context)).flat();
-                }
-                
-                code.push(
-                    new ElseBlock({}),
-                    new BracketBlock({type: BracketType.IF, direction: BracketDirection.OPEN}),
-                        ...elseContentsCode,
-                    new BracketBlock({type: BracketType.IF, direction: BracketDirection.CLOSE}),
-                )
-            }
-
-            return code;
-        }
-        else if (s instanceof DoStatement) {
-            let innerStatements = s.chunk.statements.map(child => this.compileStatement(child,context)).flat();
-            if (s.whileKeyword && s.whileCondition) {
-                // TODO: compile condition in a way that takes advantage of break's control flow properties
-                let breakerCode = this.compileIfStatement(s.whileCondition, [
-                    new ActionBlock(DFCodeblockName.CONTROL,{
-                        action: "StopRepeat"
-                    })
-                ], s.whileInverterToken == null, exprContext);
-                
-                let firstRunTempVar = tvp.newTempVar(Type.num);
-
-                return [
-                    new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                        action: "=",
-                        args: [firstRunTempVar, new NumberValue("0")],
-                    }),
-                    new SubActionBlock(DFCodeblockName.REPEAT, {
-                        action: "Forever",
-                    }),
-                    new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.REPEAT}),
-                        // wrap breaker code in this if statement so it doesnt run on the first iteration
-                        new ActionBlock(DFCodeblockName.IF_VARIABLE, {
-                            action: "=",
-                            args: [firstRunTempVar, new NumberValue("1")],
-                        }),
-                        new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.IF}),
-                            ...breakerCode,
-                        new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.IF}),
-                        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                            action: "=",
-                            args: [firstRunTempVar, new NumberValue("1")]
-                        }),
-
-                        ...innerStatements,
-
-                    new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.REPEAT}),
-                ];
-            } else {
-                return innerStatements;
-            }
-        }
-        else if (s instanceof RepeatStatement) {
-            let countExpression = s.countExpression?.getRealExpression();
-            if (countExpression) {
-                let code: CodeBlock[] = [];
-                let counterVar: VariableValue | undefined;
-                let amountExpr: Expression;
-
-                // with count
-                if (countExpression instanceof BinaryExpression && countExpression.operator.type == TokenType.TO) {
-                    let [cVar, cVarCode] = this.compileExpression(countExpression.left, exprContext);
-                    code.push(...cVarCode);
-                    if (cVar instanceof VariableValue && !cVar.isTempVar) {
-                        counterVar = cVar;
-                    } else {
-                        this.reportError(countExpression.left, `Repeat counter must be a variable`, cVar);
-                    }
-
-                    amountExpr = countExpression.right;
-                } else {
-                    amountExpr = countExpression;
-                }
-
-                let [amount, amountCode] = this.compileExpression(amountExpr, exprContext);
-                code.push(...amountCode);
-
-                let failed = false;
-                if (!(amount instanceof TangibleValue)) {
-                    this.reportError(
-                        amountExpr,
-                        `${amount.constructor.name} is not allowed here`,
-                        amount
-                    );
-                    return [];
-                }
-                let amountType = amount.getType(this.env.types);
-                if (!amountType.matches(Type.num)) {
-                    this.reportError(
-                        amountExpr,
-                        `Expected type 'num' for repeat amount, got '${amountType}'`
-                    );
-                    return [];
-                }
-                if (!s.chunk) return [];
-                code.push(
-                    new SubActionBlock(DFCodeblockName.REPEAT,{
-                        action: "Multiple",
-                        args: counterVar ? [counterVar, amount] : [amount],
-                    }),
-                    new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.REPEAT}),
-                        ...s.chunk.statements.map(child => this.compileStatement(child,context)).flat(),
-                    new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.REPEAT}),
-                )
-                return code;
-            } 
-            // repeat forever
-            else {
-                if (!s.chunk) return [];
-                return [
-                    new SubActionBlock(DFCodeblockName.REPEAT,{
-                        action: "Forever",
-                    }),
-                    new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.REPEAT}),
-                        ...s.chunk.statements.map(child => this.compileStatement(child,context)).flat(),
-                    new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.REPEAT}),
-                ]
-            }
-        }
-        else if (s instanceof WhileStatement) {
-            // compile condition anyway so errors are still reported
-            if (!s.chunk) {
-                this.compileExpression(s.condition, exprContext);
-                return [];
-            };
-            
-            let innerStatements = s.chunk?.statements.map(child => this.compileStatement(child,context)).flat();
-
-            // TODO: compile condition in a way that takes advantage of break's control flow properties
-            let breakerCode = this.compileIfStatement(s.condition, [
-                new ActionBlock(DFCodeblockName.CONTROL,{
-                    action: "StopRepeat"
-                })
-            ], s.inverterToken == null, exprContext);
-
-            return [
-                new SubActionBlock(DFCodeblockName.REPEAT, {
-                    action: "Forever",
-                }),
-                new BracketBlock({direction: BracketDirection.OPEN, type: BracketType.REPEAT}),
-                    ...breakerCode,
-                    ...innerStatements,
-                new BracketBlock({direction: BracketDirection.CLOSE, type: BracketType.REPEAT}),
-            ];
-        }
-        else if (s instanceof ForStatement) {
-            let code: CodeBlock[] = []
-            let innerStatements = s.chunk?.statements.map(child => this.compileStatement(child,context)).flat();
-
-            let varValues: VariableValue[] = [];
-
-            // validate variables
-            if (s.variableList.elements.length == 0) {
-                this.reportError(
-                    s.keyword,
-                    'For loops must specify at least one variable'
-                );
-            } else {
-                for (const expr of s.variableList.elements) {
-                    let [val, valCode] = this.compileExpression(expr, exprContext);
-                    code.push(...valCode);
-                    if (val instanceof VariableValue && !val.isTempVar) {
-                        varValues.push(val);
-                    } else {
-                        this.reportError(
-                            expr,
-                            `Values on the left side of a for loop must be variables`
-                        );
-                    }
-                }
-            }
-
-            if (s.iteratorExpression == null) return [];
-
-            let expectedVars: number = 1;
-            let iteratorExpr = s.iteratorExpression.getRealExpression();
-            // built-in actions
-            if (isForLoopActionCall(iteratorExpr)) {
-                let definition = REPEAT_ACTIONS[iteratorExpr.callee.token.value].def;
-                let [_, headerCode] = this.compileCallExpression(iteratorExpr, definition, exprContext);
-                (headerCode[headerCode.length-1] as ActionBlock).args.unshift(...varValues) // add vars
-                code.push(...headerCode)
-            }
-            else {
-                let [iteratorValue, iteratorValueCode] = this.compileExpression(iteratorExpr, exprContext);
-                code.push(...iteratorValueCode);
-                let iteratorValueType = iteratorValue.getType(this.env.types).getRuntimeType();
-                // iterate over lists
-                if (iteratorValueType.matches(Type.list) && iteratorValue instanceof TangibleValue) { 
-                    code.push(new ActionBlock(DFCodeblockName.REPEAT, {
-                        action: "ForEach",
-                        args: [...varValues, iteratorValue]
-                    }));
-                }
-                // iterate over dicts
-                else if (iteratorValueType.matches(Type.dict) && iteratorValue instanceof TangibleValue) {
-                    expectedVars = 2;
-                    code.push(new ActionBlock(DFCodeblockName.REPEAT, {
-                        action: "ForEachEntry",
-                        args: [...varValues, iteratorValue]
-                    }));
-                }
-                // error for uniterable type     (is uniterable a word?? probably moreso than initerable)
-                else {
-                    this.reportError(
-                        iteratorExpr,
-                        `Cannot iterate over type '${iteratorValue.getType(this.env.types).name}'`,
-                        iteratorValue
-                    );
-                    return [];
-                }
-            }
-
-            if (s.variableList.elements.length != 0 && s.variableList.elements.length != expectedVars) {
-                this.reportError(
-                    s.keyword,
-                    `Expected ${expectedVars} variable${ps(expectedVars)}, got ${s.variableList.elements.length}`
-                )
-            }
-
-            if (innerStatements == undefined) return [];
-            code.push(
-                new BracketBlock({type: BracketType.REPEAT, direction: BracketDirection.OPEN}),
-                    ...innerStatements,
-                new BracketBlock({type: BracketType.REPEAT, direction: BracketDirection.CLOSE}),
-            );
-            return code;
-        }
-        else if (s instanceof PerSelectedStatement) {
-            return s.chunk.statements.map(s => this.compileStatement(s, {...context, perSelectedMode: true})).flat();
-        }
-        else if (s instanceof EventStatement || s instanceof FunctionStatement) {
-            this.reportError(s,`${toNameCase(s.headerType ?? 'this')} declarations can only appear at the top level of a file`);
-        }
-        return [];
-    }
-
-    /** 
-     * Generated code will be added to the internal templates and will be outputted
-     * along with the rest of the project's generated code when compile() is called
-     * */
-    compileItemLibrary(library: ItemLibrary) {
-        let setupFuncName = `${TC_HEADER}IL_${library.id}`;
-        
-        let functionLineEntry = this.getLineEntry(DFCodeblockName.FUNCTION, setupFuncName);
-        functionLineEntry.code.push(Object.entries(library.items)
-        .filter(([id, item]) => isSNBTValid(item.data))
-        .map(([id, item]) => new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                action: "=",
-                args: [
-                    new VariableValue(`${TC_HEADER}LI_${library.id}\uFFFF${id}`, VariableScope.GLOBAL),
-                    new LibraryItemValue(item.data,item.version,library.id,id),
-                ]
-            })
-        ));
-
-        let gameStartupEntry = this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup")
-        gameStartupEntry.code.push([new ActionBlock(DFCodeblockName.CALL_FUNCTION, {
-            action: setupFuncName
-        })]);
-    }
-
-    /** Source namespace declarations flatten to ordinary mangled functions/processes. */
-    private getCompilableTopLevelStatements(): Statement[] {
-        let flattened: Statement[] = [];
-        const visit = (statement: Statement, insideNamespace: boolean = false) => {
-            if (statement instanceof NamespaceStatement) {
-                if (statement.chunk instanceof ChunkExpression) {
-                    for (const member of statement.chunk.statements) visit(member, true);
-                }
-                return;
-            }
-            if (insideNamespace) {
-                if (statement instanceof FunctionStatement && this.env.types.sourceNamespaceFunctionStatements.has(statement)) {
-                    flattened.push(statement);
-                }
-                return;
-            }
-            if (
-                statement instanceof ImportStatement
-                || statement instanceof NamespaceVariableStatement
-                || statement instanceof NamespaceSchemaStatement
-            ) {
-                return;
-            }
-            flattened.push(statement);
-        }
-        for (const statement of this.ast) visit(statement);
-        return flattened;
-    }
-
-    /** Emits namespace variable initializers after runtime dictionaries are ready. */
-    private compileSourceNamespaceInitializers() {
-        let initializerCode: CodeBlock[] = [];
-        for (const definition of this.env.types.sourceNamespaceVariables) {
-            if (definition.initializer == null) continue;
-            let [value, valueCode] = this.compileExpression(definition.initializer, {});
-            initializerCode.push(...valueCode);
-            if (!(value instanceof TangibleValue)) {
-                this.reportError(
-                    definition.initializer,
-                    `${value.constructor.name} cannot initialize namespace variable '${definition.namespace.fullPath}.${definition.name}'`,
-                    value,
-                );
-                continue;
-            }
-            // Use the definition setter rather than a raw assignment so a
-            // schema dictionary created earlier in PlotStartup immediately
-            // receives the initialized value as well.
-            initializerCode.push(...definition.compileSet(value, this.getEvaluationContext()));
-        }
-        if (initializerCode.length > 0) {
-            this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(initializerCode);
-        }
-    }
-
-    private getSourceNamespaceDiagnosticNode(namespace: SourceNamespace, member?: string): ASTNode | null {
-        return (
-            (member ? namespace.memberDeclarationNodes.get(member) : undefined)
-            ?? namespace.declarations[0]
-            ?? namespace.parentSourceNamespace?.memberDeclarationNodes.get(namespace.identifier)
-            ?? namespace.parentSourceNamespace?.declarations[0]
-            ?? null
+      }
+    } else if (
+      (s instanceof AssignmentStatement && s.isErrorFree()) ||
+      s instanceof IncrementStatement
+    ) {
+      let rawValue: CodeValue;
+      let values: CodeValue[];
+      let assigneeExpressions: Expression[];
+
+      // assignment statement: proceed as normal
+      let valueCode: CodeBlock[];
+      if (s instanceof AssignmentStatement) {
+        [rawValue, valueCode] = this.compileExpression(
+          s.rightValue,
+          exprContext,
         );
-    }
-
-    /** Returns the immediate runtime members for one schema-backed namespace. */
-    private getSourceNamespaceDictionaryMembers(namespace: SourceNamespace): [string, TangibleValue][] {
-        let members: [string, TangibleValue][] = [];
-        let ctx = this.getEvaluationContext();
-        let report = (name: string, message: string) => {
-            let node = this.getSourceNamespaceDiagnosticNode(namespace, name);
-            if (node != null) this.reportError(node, message);
-        };
-        let addValue = (name: string, definition: unknown) => {
-            if (!isSourceNamespaceVariableDefinition(definition)) {
-                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' is not a value`);
-                return;
-            }
-            let [value, code] = definition.compile(ctx);
-            if (code.length > 0) {
-                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' cannot require generated code`);
-                return;
-            }
-            members.push([name, value]);
-        };
-        let addFunction = (name: string, definition: unknown) => {
-            if (!isFunctionDefinition(definition)) {
-                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' is not a function`);
-                return;
-            }
-            members.push([
-                name,
-                new StringValue(definition.name, definition.astNode),
-            ]);
-        };
-        let addChild = (name: string, child: SourceNamespace | undefined) => {
-            if (child == undefined) {
-                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' is missing its nested namespace`);
-                return;
-            }
-            let value = this.env.types.getSourceNamespaceRuntimeValue(child);
-            if (!(value instanceof TangibleValue)) {
-                report(name, `Nested namespace '${child.fullPath}' has no runtime dictionary`);
-                return;
-            }
-            members.push([name, value]);
-        };
-
-        // A conforming namespace stores its shape's declared fields. Its own
-        // schema, when present, instead describes a container of child
-        // namespaces and is handled below.
-        if (namespace.effectiveSchema?.kind == "shape") {
-            for (const field of namespace.effectiveSchema.fields.values()) {
-                let definition = namespace.members[field.name];
-                if (definition == undefined) continue; // optional field omitted
-                if (field.kind == "value") addValue(field.name, definition);
-                else if (field.kind == "function") addFunction(field.name, definition);
-                else addChild(field.name, namespace.children.get(field.name));
-            }
-            return members;
+        if (rawValue instanceof MultiValue) {
+          values = [...rawValue.values];
+        } else {
+          values = [rawValue];
         }
-
-        let schema = namespace.schema;
-        if (schema == null) return members;
-        if (schema.kind == "value") {
-            for (const [name, definition] of Object.entries(namespace.members)) {
-                addValue(name, definition);
-            }
-            return members;
-        }
-        if (schema.kind == "function") {
-            for (const [name, definition] of Object.entries(namespace.members)) {
-                addFunction(name, definition);
-            }
-            return members;
-        }
-        for (const [name, child] of namespace.children) {
-            addChild(name, child);
-        }
-        return members;
-    }
-
-    /**
-     * Each schema namespace gets an immediate-member dictionary. Children are
-     * initialized first, so parent entries can point at already-created child
-     * dictionaries rather than constructing a recursive monolith.
-     */
-    private compileSourceNamespaceDictionaries() {
-        let dictionaryCode: CodeBlock[] = [];
-        let namespaces = [...this.env.types.sourceNamespaces]
-            .filter(namespace => namespace.runtimeBacked)
-            .sort((a, b) => b.path.length - a.path.length);
-
-        for (const namespace of namespaces) {
-            let entries = this.getSourceNamespaceDictionaryMembers(namespace);
-            if (entries.length > DICT_LENGTH_LIMIT) {
-                let node = this.getSourceNamespaceDiagnosticNode(namespace);
-                if (node != null) this.reportError(
-                    node,
-                    `Namespace '${namespace.fullPath}' has ${entries.length} runtime members, exceeding DiamondFire's dictionary limit of ${DICT_LENGTH_LIMIT}`,
-                );
-            }
-            let dictionary = this.env.types.getSourceNamespaceRuntimeValue(namespace);
-            if (!(dictionary instanceof VariableValue)) {
-                let node = this.getSourceNamespaceDiagnosticNode(namespace);
-                if (node != null) this.reportError(node, `Namespace '${namespace.fullPath}' has no writable runtime dictionary`);
-                continue;
-            }
-            let keys = this.tempVarProvider.newTempVar(Type.list(Type.str));
-            let values = this.tempVarProvider.newTempVar(Type.list(Type.any));
-            dictionaryCode.push(
-                ...this.compileListContents(keys, entries.map(([name]) => new StringValue(name))),
-                ...this.compileListContents(values, entries.map(([, value]) => value)),
-                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-                    action: "CreateDict",
-                    args: [dictionary, keys, values],
-                }),
+        for (let v of values) {
+          let vType = v.getType(this.env.types);
+          if (!Type.assignableTypes.has(vType.name)) {
+            this.reportError(
+              s.rightValue,
+              `Type '${vType.name}' cannot be stored in variables`,
             );
-        }
-        if (dictionaryCode.length > 0) {
-            this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(dictionaryCode);
-        }
-    }
+            return [];
+          }
 
-    compile({outputFormat, splitToLength = -1}: {outputFormat: "GZIP" | "DFONLINE", splitToLength?: number}) {
-        let declarationsToCompile = this.processLineDeclarations(this.getCompilableTopLevelStatements());
-        this.compileSourceNamespaceDictionaries();
-        this.compileSourceNamespaceInitializers();
+          if (!(v instanceof TangibleValue)) {
+            this.reportError(
+              v.astNode ?? s.rightValue,
+              `${v.constructor.name} cannot be stored in variables`,
+              v,
+            );
 
-        for (const [lineEntry, declaration] of declarationsToCompile) {
-            this.tempVarProvider.resetCount();
-            if (declaration instanceof EventStatement || declaration instanceof FunctionStatement) {
-                if (!(declaration.chunk instanceof ChunkExpression)) continue;
-                lineEntry.code.push(...declaration.chunk.statements.map(
-                    s => this.compileStatement(s, {
-                        lineStatement: declaration,
-                        lineEntry: lineEntry,
-                    })
-                ));
+            return [];
+          }
+        }
+        assigneeExpressions = s.leftValues;
+      } // increment statement: treat this the same as `value += 1`;
+      else {
+        assigneeExpressions = [s.target];
+        rawValue = new NumberValue("1");
+        values = [rawValue];
+        valueCode = [];
+      }
+
+      let code: CodeBlock[] = [...valueCode];
+
+      for (let i = 0; i < assigneeExpressions.length; i++) {
+        let assigneeExpr = assigneeExpressions[i];
+        if (i >= values.length) {
+          if (
+            rawValue instanceof MultiValue && rawValue.overflowType != Type.void
+          ) {
+            let newVal = tvp.newTempVar((rawValue as MultiValue).overflowType);
+            values[i] = newVal;
+            (valueCode[valueCode.length - 1] as ActionBlock).args.push(newVal); // TODO: this is awful
+          } else {
+            this.reportError(
+              assigneeExpr,
+              `Tried to set ${
+                i + 1
+              } or more variables, but only ${values.length} value(s) were provided.`,
+            );
+            continue;
+          }
+        }
+
+        if (assigneeExpr instanceof VariableExpression) {
+          this.shadowingCheck(assigneeExpr);
+        }
+
+        // generate path
+        let baseExpression: Expression | undefined;
+        let path: {
+          accesseeType: Type;
+          accessMode: "property" | "member";
+          accessor: TangibleValue | string;
+          expr: AccessExpression | BracketedAccessExpression;
+        }[] = [];
+        let consumedCompileTimeNamespacePath = false;
+        const generatePath = (expr: Expression, typeOverride?: Type) => {
+          expr = expr.getRealExpression();
+          if (expr instanceof TypecastExpression) {
+            generatePath(
+              expr.left,
+              this.env.types.evaluateExplicitType(expr.type),
+            );
+          } else if (expr instanceof BracketedAccessExpression) {
+            let [accessor, keyCode] = this.compileExpression(
+              expr.propertyName,
+              exprContext,
+            );
+            if (!(accessor instanceof TangibleValue)) return;
+            code.push(...keyCode);
+            path.unshift({
+              accesseeType: typeOverride ??
+                this.env.types.evaluateExpression(expr.accessee),
+              accessMode: "member",
+              accessor,
+              expr,
+            });
+            generatePath(expr.accessee);
+          } else if (expr instanceof AccessExpression) {
+            path.unshift({
+              accesseeType: typeOverride ??
+                this.env.types.evaluateExpression(expr.accessee),
+              accessMode: "property",
+              accessor: expr.propertyName.value,
+              expr,
+            });
+            generatePath(expr.accessee);
+          } else {
+            baseExpression = expr;
+          }
+        };
+        generatePath(assigneeExpr);
+        if (baseExpression == undefined) return [];
+
+        // compile path
+        const walkPath = (currentAccessee: CodeValue, pathIndex: number) => {
+          if (!(currentAccessee instanceof TangibleValue)) {
+            // Unschema'd source namespaces are compile-time-only
+            // values. They can still be the first segment of a
+            // qualified static assignment such as
+            // `physics.gravity = -9.8`; consume that property and
+            // continue with its concrete mangled variable.
+            if (
+              currentAccessee instanceof NamespaceValue &&
+              pathIndex < path.length &&
+              path[pathIndex].accessMode == "property"
+            ) {
+              let segment = path[pathIndex];
+              if (
+                !this.validateSingleAccess(
+                  currentAccessee,
+                  segment.accessor,
+                  segment.expr,
+                  "member",
+                )
+              ) {
+                return;
+              }
+              let [child, getterCode] = this.compileSingleAccessGet(
+                currentAccessee,
+                segment.accessor,
+                segment.expr,
+                segment.accessMode,
+                exprContext,
+              );
+              code.push(...getterCode);
+              // The resulting value replaces the namespace
+              // segment in the assignment path. This leaves the
+              // ordinary variable/property setter below to
+              // handle the rest of the assignment uniformly.
+              path.splice(pathIndex, 1);
+              consumedCompileTimeNamespacePath = true;
+              walkPath(child, pathIndex);
+              return;
             }
-        }
+            this.reportError(
+              path[pathIndex]?.expr.accessee ?? currentAccessee.astNode ??
+                assigneeExpr,
+              `This value cannot be assigned to`,
+              currentAccessee,
+            );
+            return;
+          }
 
-        //=- join code lines together and optimize them -=\\
+          let accessor = path[pathIndex]?.accessor;
+          if (
+            path.length != 0 &&
+            !this.validateSingleAccess(
+              currentAccessee,
+              accessor,
+              path[pathIndex].expr,
+              "member",
+            )
+          ) {
+            return [];
+          }
 
-        const optimizer = new CodeOptimizer(this.env.types);
-        
-        let output: Map<HeaderType, {[name: string]: string}> = new Map([
-            [DFCodeblockName.PLAYER_EVENT, {}],
-            [DFCodeblockName.ENTITY_EVENT, {}],
-            [DFCodeblockName.GAME_EVENT, {}],
-            [DFCodeblockName.FUNCTION, {}],
-            [DFCodeblockName.PROCESS, {}],
-        ]);
-        for (let [headerType, lineList] of this.codeLines.entries()) {
-            for (let [name, line] of Object.entries(lineList)) {
-                try {
-                    let joinedCode = [line.headerBlock!, ...line.code.flat()];
-    
-                    if (this.env.optimizationsEnabled) {
-                        optimizer.optimize(joinedCode);
-                    }
-    
-                    let outputLines: CodeBlock[][];
-    
-                    if (splitToLength != -1) {
-                        outputLines = SliceCodeLine(joinedCode, splitToLength);
-                    } else {
-                        outputLines = [joinedCode];
-                    }
-    
-                    for (let outLine of outputLines) {
-                        let firstBlock = outLine[0] as ActionBlock;
-    
-                        let serialized: string = "error :(";
-                        if (outputFormat == "DFONLINE") {
-                            serialized = `https://dfonline.dev/edit/?template=${gzipize(jsonize(outLine))}`;
-                        } else {
-                            serialized = gzipize(jsonize(outLine));
-                        }
-        
-                        output.get(firstBlock.block as HeaderType)![firstBlock.action] = serialized;
-                    }
-                } catch (e) {
-                    if (e instanceof Error && e.message == SPLIT_FAILED_ERROR_MESSAGE) {
-                        let errorMessage = (
-                            `Could not automatically split code line ${headerType} '${name}'.\n`+
-                            `This is often caused by using percent codes inside line variables or using percent codes inside %var().\n`+
-                            `Try manually splitting this code line into separate functions.`
-                        );
-                        let astNode = line.headerBlock?.astNode;
-                        if (astNode && (astNode instanceof EventStatement || astNode instanceof FunctionStatement)) {
-                            this.errors.push(new TCNodeError((astNode.chunk as ChunkExpression).opener ?? astNode.chunk, ErrorType.COMPILER, errorMessage));
-                        } else {
-                            this.errors.push(new TCStandaloneError(ErrorType.COMPILER, errorMessage));
-                        }
-                    }
-                    else {
-                        this.errors.push(new TCStandaloneError(ErrorType.COMPILER, 
-                            `There was an internal compiler error while compiling code line ${headerType} ${name}. Please report the below text (alongside any scripts contributing to this code line) to Terracotta developers.\n`
-                            +"#".repeat(60)
-                            +`\n${e}`
-                            +(e instanceof Error ? `\n${e.stack}\n` : "")
-                            +"#".repeat(60)
-                        ))
-                    }
+          // recursively generate accessor code
+          if (pathIndex < path.length - 1) {
+            let [child, getterCode] = this.compileSingleAccessGet(
+              currentAccessee,
+              accessor,
+              path[pathIndex].expr,
+              path[pathIndex].accessMode,
+              exprContext,
+            );
+            if (!(child instanceof TangibleValue)) {
+              this.reportError(
+                path[pathIndex]?.expr.accessee ?? child.astNode ?? assigneeExpr,
+                `This value cannot be assigned to`,
+                child,
+              );
+              return;
+            }
+            code.push(...getterCode);
+            walkPath(child, pathIndex + 1);
+            code.push(
+              ...this.compileSingleAccessSet(
+                currentAccessee,
+                accessor,
+                child,
+                path[pathIndex].accessMode,
+                exprContext,
+                true,
+              ),
+            );
+          } // base case: actually modify the value
+          else {
+            if (!(values[i] instanceof TangibleValue)) {
+              this.reportError(
+                values[i].astNode ??
+                  (s instanceof AssignmentStatement ? s.rightValue[i] : s),
+                "This value cannot be stored in variables",
+              );
+              return;
+            }
+            let val = values[i] as TangibleValue;
+
+            // incrementor operators
+            if (s.operator.type != TokenType.EQUALS) {
+              let incrementBase: TangibleValue;
+              if (path.length == 0) {
+                incrementBase = currentAccessee;
+              } else {
+                let [child, getterCode] = this.compileSingleAccessGet(
+                  currentAccessee,
+                  accessor,
+                  path[pathIndex].expr,
+                  path[pathIndex].accessMode,
+                  exprContext,
+                );
+                if (!(child instanceof TangibleValue)) {
+                  this.reportError(
+                    path[pathIndex]?.expr.accessee ?? child.astNode ??
+                      assigneeExpr,
+                    `This value cannot be assigned to`,
+                    child,
+                  );
+                  return;
                 }
+                code.push(...getterCode);
+                incrementBase = child;
+              }
+              let [newValue, newCode] = Operations.evaluateBinaryValue(
+                incrementBase,
+                s.operator,
+                val,
+                this.getEvaluationContext(),
+                s instanceof IncrementStatement,
+              );
+              if (!(newValue instanceof TangibleValue)) return;
+              val = newValue;
+              code.push(...newCode);
             }
+
+            // type validation
+            let expectedType: Type = Type.any;
+            if (
+              assigneeExpr instanceof VariableExpression &&
+              assigneeExpr.assignedType
+            ) {
+              expectedType = this.env.types.evaluateExplicitType(
+                assigneeExpr.assignedType.type,
+              );
+            } else if (
+              path.length == 0 && currentAccessee instanceof VariableValue
+            ) {
+              expectedType = currentAccessee.getType(this.env.types);
+            } else {
+              expectedType = this.env.types.evaluateExpression(assigneeExpr);
+            }
+            let resultType = val.getType(this.env.types);
+            if (!resultType.isAssignableTo(expectedType)) {
+              this.reportError(
+                val.astNode ?? assigneeExpr,
+                `Type '${resultType}' is not assignable to type '${expectedType}'`,
+              );
+            }
+
+            // if this is setting a variable without a path, set directly
+            if (path.length == 0) {
+              if (
+                !(
+                  (assigneeExpr instanceof VariableExpression) ||
+                  (assigneeExpr instanceof AtomicExpression &&
+                    currentAccessee instanceof VariableValue) ||
+                  (consumedCompileTimeNamespacePath &&
+                    currentAccessee instanceof VariableValue)
+                )
+              ) {
+                this.reportError(
+                  assigneeExpr,
+                  currentAccessee instanceof GameValueValue
+                    ? `Game values cannot be assigned to. Use an action instead.`
+                    : `Left-hand side of an assignment statement must be a variable or an access expression`,
+                  currentAccessee,
+                );
+                return;
+              }
+
+              // An unqualified/imported namespace variable is
+              // compiled as a normal global VariableValue. Route
+              // assignments through its definition anyway so a
+              // schema dictionary stays synchronized with the
+              // statically named variable.
+              let realAssignee = assigneeExpr.getRealExpression();
+              if (
+                realAssignee instanceof AtomicExpression &&
+                (realAssignee.token.type == TokenType.IDENTIFIER ||
+                  realAssignee.token.type == TokenType.NAMESPACE)
+              ) {
+                let definition = this.env.types.resolveIdentifier(
+                  realAssignee.token,
+                );
+                if (isNamespaceVariableDefinition(definition)) {
+                  code.push(
+                    ...definition.compileSet(
+                      val,
+                      this.getEvaluationContext(context.perSelectedMode),
+                    ),
+                  );
+                  return;
+                }
+              }
+
+              code.push(
+                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                  action: "=",
+                  args: [currentAccessee, val],
+                }),
+              );
+            } // otherwise do the type-specific behavior
+            else {
+              code.push(
+                ...this.compileSingleAccessSet(
+                  currentAccessee,
+                  accessor,
+                  val,
+                  path[pathIndex].accessMode,
+                  exprContext,
+                ),
+              );
+            }
+          }
+        };
+        let [baseValue, baseCode] = this.compileExpression(
+          baseExpression,
+          exprContext,
+        );
+        code.push(...baseCode);
+        walkPath(baseValue, 0);
+      }
+      return code;
+    } else if (s instanceof SingleKeywordStatement) {
+      let action: string | null = null;
+      switch (s.keyword.type) {
+        case TokenType.BREAK: {
+          action = "StopRepeat";
+          break;
+        }
+        case TokenType.CONTINUE: {
+          action = "Skip";
+          break;
+        }
+      }
+      if (action) {
+        return [new ActionBlock(DFCodeblockName.CONTROL, { action })];
+      }
+    } else if (s instanceof ReturnStatement) {
+      let code: CodeBlock[] = [];
+      if (s.values.length > 0) {
+        let expectedValueAmount = context.lineEntry.returnTypes?.length ?? 0;
+        let actualValueAmount = s.values.length;
+        if (context.lineEntry.returnTypes == null) {
+          this.reportError(
+            s.values[0],
+            `Values cannot be returned from a ${context.lineEntry.headerType.toLowerCase()}`,
+          );
+          return [];
+        } else if (actualValueAmount != expectedValueAmount) {
+          this.reportError(
+            s.keyword,
+            `Expected ${expectedValueAmount} return value${
+              ps(expectedValueAmount)
+            }, got ${actualValueAmount}`,
+          );
         }
 
-        return output;
+        let values: TangibleValue[] = [];
+        for (
+          let i = 0;
+          i < s.values.length && i < context.lineEntry.returnTypes.length;
+          i++
+        ) {
+          let valueExpr = s.values[i];
+          let [value, valueCode] = this.compileExpression(
+            valueExpr,
+            exprContext,
+          );
+          if (!(value instanceof TangibleValue)) {
+            this.reportError(
+              valueExpr,
+              `${value.constructor.name} cannot be returned from functions`,
+            );
+            continue;
+          }
+          let valType = value.getType(this.env.types);
+          let expectedType = context.lineEntry.returnTypes[i];
+          if (!valType.isAssignableTo(expectedType)) {
+            this.reportError(
+              valueExpr,
+              `Expected type ${expectedType} for this return value, got ${valType}`,
+            );
+          }
+          values.push(value);
+          code.push(
+            ...valueCode,
+            new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+              action: "=",
+              args: [
+                new VariableValue(`@__TC_RET_${i}`, VariableScope.LINE),
+                value,
+              ],
+            }),
+          );
+        }
+      }
+      code.push(
+        new ActionBlock(DFCodeblockName.CONTROL, {
+          action: "Return",
+        }),
+      );
+      return code;
+    } else if (s instanceof IfStatement) {
+      // compile condition anyway so errors are still reported
+      if (!s.chunk) {
+        this.compileExpression(s.condition, exprContext);
+        return [];
+      }
+
+      let innerIfCode = s.chunk.statements.map((child) =>
+        this.compileStatement(child, context)
+      ).flat();
+      let code: CodeBlock[] = this.compileIfStatement(
+        s.condition,
+        innerIfCode,
+        s.inverterToken != null,
+        exprContext,
+        s.elseContents != null,
+      );
+
+      if (s.elseContents) {
+        let elseContentsCode: CodeBlock[] = [];
+
+        if (s.elseContents instanceof IfStatement) {
+          elseContentsCode = this.compileStatement(s.elseContents, context);
+        } else {
+          elseContentsCode = s.elseContents.statements.map((child) =>
+            this.compileStatement(child, context)
+          ).flat();
+        }
+
+        code.push(
+          new ElseBlock({}),
+          new BracketBlock({
+            type: BracketType.IF,
+            direction: BracketDirection.OPEN,
+          }),
+          ...elseContentsCode,
+          new BracketBlock({
+            type: BracketType.IF,
+            direction: BracketDirection.CLOSE,
+          }),
+        );
+      }
+
+      return code;
+    } else if (s instanceof DoStatement) {
+      let innerStatements = s.chunk.statements.map((child) =>
+        this.compileStatement(child, context)
+      ).flat();
+      if (s.whileKeyword && s.whileCondition) {
+        // TODO: compile condition in a way that takes advantage of break's control flow properties
+        let breakerCode = this.compileIfStatement(
+          s.whileCondition,
+          [
+            new ActionBlock(DFCodeblockName.CONTROL, {
+              action: "StopRepeat",
+            }),
+          ],
+          s.whileInverterToken == null,
+          exprContext,
+        );
+
+        let firstRunTempVar = tvp.newTempVar(Type.num);
+
+        return [
+          new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "=",
+            args: [firstRunTempVar, new NumberValue("0")],
+          }),
+          new SubActionBlock(DFCodeblockName.REPEAT, {
+            action: "Forever",
+          }),
+          new BracketBlock({
+            direction: BracketDirection.OPEN,
+            type: BracketType.REPEAT,
+          }),
+          // wrap breaker code in this if statement so it doesnt run on the first iteration
+          new ActionBlock(DFCodeblockName.IF_VARIABLE, {
+            action: "=",
+            args: [firstRunTempVar, new NumberValue("1")],
+          }),
+          new BracketBlock({
+            direction: BracketDirection.OPEN,
+            type: BracketType.IF,
+          }),
+          ...breakerCode,
+          new BracketBlock({
+            direction: BracketDirection.CLOSE,
+            type: BracketType.IF,
+          }),
+          new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "=",
+            args: [firstRunTempVar, new NumberValue("1")],
+          }),
+
+          ...innerStatements,
+
+          new BracketBlock({
+            direction: BracketDirection.CLOSE,
+            type: BracketType.REPEAT,
+          }),
+        ];
+      } else {
+        return innerStatements;
+      }
+    } else if (s instanceof RepeatStatement) {
+      let countExpression = s.countExpression?.getRealExpression();
+      if (countExpression) {
+        let code: CodeBlock[] = [];
+        let counterVar: VariableValue | undefined;
+        let amountExpr: Expression;
+
+        // with count
+        if (
+          countExpression instanceof BinaryExpression &&
+          countExpression.operator.type == TokenType.TO
+        ) {
+          let [cVar, cVarCode] = this.compileExpression(
+            countExpression.left,
+            exprContext,
+          );
+          code.push(...cVarCode);
+          if (cVar instanceof VariableValue && !cVar.isTempVar) {
+            counterVar = cVar;
+          } else {
+            this.reportError(
+              countExpression.left,
+              `Repeat counter must be a variable`,
+              cVar,
+            );
+          }
+
+          amountExpr = countExpression.right;
+        } else {
+          amountExpr = countExpression;
+        }
+
+        let [amount, amountCode] = this.compileExpression(
+          amountExpr,
+          exprContext,
+        );
+        code.push(...amountCode);
+
+        let failed = false;
+        if (!(amount instanceof TangibleValue)) {
+          this.reportError(
+            amountExpr,
+            `${amount.constructor.name} is not allowed here`,
+            amount,
+          );
+          return [];
+        }
+        let amountType = amount.getType(this.env.types);
+        if (!amountType.matches(Type.num)) {
+          this.reportError(
+            amountExpr,
+            `Expected type 'num' for repeat amount, got '${amountType}'`,
+          );
+          return [];
+        }
+        if (!s.chunk) return [];
+        code.push(
+          new SubActionBlock(DFCodeblockName.REPEAT, {
+            action: "Multiple",
+            args: counterVar ? [counterVar, amount] : [amount],
+          }),
+          new BracketBlock({
+            direction: BracketDirection.OPEN,
+            type: BracketType.REPEAT,
+          }),
+          ...s.chunk.statements.map((child) =>
+            this.compileStatement(child, context)
+          ).flat(),
+          new BracketBlock({
+            direction: BracketDirection.CLOSE,
+            type: BracketType.REPEAT,
+          }),
+        );
+        return code;
+      } // repeat forever
+      else {
+        if (!s.chunk) return [];
+        return [
+          new SubActionBlock(DFCodeblockName.REPEAT, {
+            action: "Forever",
+          }),
+          new BracketBlock({
+            direction: BracketDirection.OPEN,
+            type: BracketType.REPEAT,
+          }),
+          ...s.chunk.statements.map((child) =>
+            this.compileStatement(child, context)
+          ).flat(),
+          new BracketBlock({
+            direction: BracketDirection.CLOSE,
+            type: BracketType.REPEAT,
+          }),
+        ];
+      }
+    } else if (s instanceof WhileStatement) {
+      // compile condition anyway so errors are still reported
+      if (!s.chunk) {
+        this.compileExpression(s.condition, exprContext);
+        return [];
+      }
+
+      let innerStatements = s.chunk?.statements.map((child) =>
+        this.compileStatement(child, context)
+      ).flat();
+
+      // TODO: compile condition in a way that takes advantage of break's control flow properties
+      let breakerCode = this.compileIfStatement(
+        s.condition,
+        [
+          new ActionBlock(DFCodeblockName.CONTROL, {
+            action: "StopRepeat",
+          }),
+        ],
+        s.inverterToken == null,
+        exprContext,
+      );
+
+      return [
+        new SubActionBlock(DFCodeblockName.REPEAT, {
+          action: "Forever",
+        }),
+        new BracketBlock({
+          direction: BracketDirection.OPEN,
+          type: BracketType.REPEAT,
+        }),
+        ...breakerCode,
+        ...innerStatements,
+        new BracketBlock({
+          direction: BracketDirection.CLOSE,
+          type: BracketType.REPEAT,
+        }),
+      ];
+    } else if (s instanceof ForStatement) {
+      let code: CodeBlock[] = [];
+      let innerStatements = s.chunk?.statements.map((child) =>
+        this.compileStatement(child, context)
+      ).flat();
+      let namespaceIterationSetup: CodeBlock[] = [];
+
+      let varValues: VariableValue[] = [];
+
+      // validate variables
+      if (s.variableList.elements.length == 0) {
+        this.reportError(
+          s.keyword,
+          "For loops must specify at least one variable",
+        );
+      } else {
+        for (const expr of s.variableList.elements) {
+          let [val, valCode] = this.compileExpression(expr, exprContext);
+          code.push(...valCode);
+          if (val instanceof VariableValue && !val.isTempVar) {
+            varValues.push(val);
+          } else {
+            this.reportError(
+              expr,
+              `Values on the left side of a for loop must be variables`,
+            );
+          }
+        }
+      }
+
+      if (s.iteratorExpression == null) return [];
+
+      let expectedVars: number = 1;
+      let iteratorExpr = s.iteratorExpression.getRealExpression();
+      // built-in actions
+      if (isForLoopActionCall(iteratorExpr)) {
+        let definition = REPEAT_ACTIONS[iteratorExpr.callee.token.value].def;
+        let [_, headerCode] = this.compileCallExpression(
+          iteratorExpr,
+          definition,
+          exprContext,
+        );
+        (headerCode[headerCode.length - 1] as ActionBlock).args.unshift(
+          ...varValues,
+        ); // add vars
+        code.push(...headerCode);
+      } else {
+        let [iteratorValue, iteratorValueCode] = this.compileExpression(
+          iteratorExpr,
+          exprContext,
+        );
+        code.push(...iteratorValueCode);
+        let declaredIteratorType = iteratorValue.getType(this.env.types);
+        let iteratorValueType = declaredIteratorType.getRuntimeType();
+        let sourceNamespace = (
+            declaredIteratorType.matches(Type.namespace) &&
+            (declaredIteratorType.data as NamespaceTypeData)
+                .namespace instanceof SourceNamespace
+          )
+          ? (declaredIteratorType.data as NamespaceTypeData)
+            .namespace as SourceNamespace
+          : null;
+        // iterate over lists
+        if (
+          iteratorValueType.matches(Type.list) &&
+          iteratorValue instanceof TangibleValue
+        ) {
+          code.push(
+            new ActionBlock(DFCodeblockName.REPEAT, {
+              action: "ForEach",
+              args: [...varValues, iteratorValue],
+            }),
+          );
+        } // Schema namespace dictionaries store global-variable names.
+        // `ForEachEntry` yields that name, so replace the value loop
+        // variable with its `%var(...)` value before user code runs.
+        else if (
+          sourceNamespace != null && iteratorValue instanceof TangibleValue
+        ) {
+          expectedVars = 2;
+          code.push(
+            new ActionBlock(DFCodeblockName.REPEAT, {
+              action: "ForEachEntry",
+              args: [...varValues, iteratorValue],
+            }),
+          );
+          if (varValues.length >= 2) {
+            let valueType = sourceNamespace.getDynamicMemberType?.() ??
+              iteratorValueType.getMemberType();
+            let dereferenced = this.createSourceNamespaceReferenceValue(
+              varValues[1],
+              valueType,
+              s.variableList.elements[1],
+            );
+            namespaceIterationSetup = this.compileSourceNamespaceReferenceUse(
+              sourceNamespace,
+              varValues[0],
+              this.getEvaluationContext(context.perSelectedMode),
+              [
+                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                  action: "=",
+                  args: [varValues[1], dereferenced],
+                }),
+              ],
+              [],
+            );
+          }
+        } // iterate over dicts
+        else if (
+          iteratorValueType.matches(Type.dict) &&
+          iteratorValue instanceof TangibleValue
+        ) {
+          expectedVars = 2;
+          code.push(
+            new ActionBlock(DFCodeblockName.REPEAT, {
+              action: "ForEachEntry",
+              args: [...varValues, iteratorValue],
+            }),
+          );
+        } // error for uniterable type     (is uniterable a word?? probably moreso than initerable)
+        else {
+          this.reportError(
+            iteratorExpr,
+            `Cannot iterate over type '${
+              iteratorValue.getType(this.env.types).name
+            }'`,
+            iteratorValue,
+          );
+          return [];
+        }
+      }
+
+      if (
+        s.variableList.elements.length != 0 &&
+        s.variableList.elements.length != expectedVars
+      ) {
+        this.reportError(
+          s.keyword,
+          `Expected ${expectedVars} variable${
+            ps(expectedVars)
+          }, got ${s.variableList.elements.length}`,
+        );
+      }
+
+      if (innerStatements == undefined) return [];
+      code.push(
+        new BracketBlock({
+          type: BracketType.REPEAT,
+          direction: BracketDirection.OPEN,
+        }),
+        ...namespaceIterationSetup,
+        ...innerStatements,
+        new BracketBlock({
+          type: BracketType.REPEAT,
+          direction: BracketDirection.CLOSE,
+        }),
+      );
+      return code;
+    } else if (s instanceof PerSelectedStatement) {
+      return s.chunk.statements.map((s) =>
+        this.compileStatement(s, { ...context, perSelectedMode: true })
+      ).flat();
+    } else if (s instanceof EventStatement || s instanceof FunctionStatement) {
+      this.reportError(
+        s,
+        `${
+          toNameCase(s.headerType ?? "this")
+        } declarations can only appear at the top level of a file`,
+      );
     }
+    return [];
+  };
+
+  /**
+   * Generated code will be added to the internal templates and will be outputted
+   * along with the rest of the project's generated code when compile() is called
+   */
+  compileItemLibrary(library: ItemLibrary) {
+    let setupFuncName = `${TC_HEADER}IL_${library.id}`;
+
+    let functionLineEntry = this.getLineEntry(
+      DFCodeblockName.FUNCTION,
+      setupFuncName,
+    );
+    functionLineEntry.code.push(
+      Object.entries(library.items)
+        .filter(([id, item]) => isSNBTValid(item.data))
+        .map(([id, item]) =>
+          new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "=",
+            args: [
+              new VariableValue(
+                `${TC_HEADER}LI_${library.id}\uFFFF${id}`,
+                VariableScope.GLOBAL,
+              ),
+              new LibraryItemValue(item.data, item.version, library.id, id),
+            ],
+          })
+        ),
+    );
+
+    let gameStartupEntry = this.getLineEntry(
+      DFCodeblockName.GAME_EVENT,
+      "PlotStartup",
+    );
+    gameStartupEntry.code.push([
+      new ActionBlock(DFCodeblockName.CALL_FUNCTION, {
+        action: setupFuncName,
+      }),
+    ]);
+  }
+
+  /** Source namespace declarations flatten to ordinary mangled functions/processes. */
+  private getCompilableTopLevelStatements(): Statement[] {
+    let flattened: Statement[] = [];
+    const visit = (statement: Statement, insideNamespace: boolean = false) => {
+      if (statement instanceof NamespaceStatement) {
+        if (statement.chunk instanceof ChunkExpression) {
+          for (const member of statement.chunk.statements) visit(member, true);
+        }
+        return;
+      }
+      if (insideNamespace) {
+        if (
+          statement instanceof FunctionStatement &&
+          this.env.types.sourceNamespaceFunctionStatements.has(statement)
+        ) {
+          flattened.push(statement);
+        }
+        return;
+      }
+      if (
+        statement instanceof ImportStatement ||
+        statement instanceof NamespaceVariableStatement ||
+        statement instanceof NamespaceSchemaStatement
+      ) {
+        return;
+      }
+      flattened.push(statement);
+    };
+    for (const statement of this.ast) visit(statement);
+    return flattened;
+  }
+
+  /** Emits namespace variable initializers after runtime dictionaries are ready. */
+  private compileSourceNamespaceInitializers() {
+    let initializerCode: CodeBlock[] = [];
+    for (const definition of this.env.types.sourceNamespaceVariables) {
+      if (definition.initializer == null) continue;
+      let [value, valueCode] = this.compileExpression(
+        definition.initializer,
+        {},
+      );
+      initializerCode.push(...valueCode);
+      if (!(value instanceof TangibleValue)) {
+        this.reportError(
+          definition.initializer,
+          `${value.constructor.name} cannot initialize namespace variable '${definition.namespace.fullPath}.${definition.name}'`,
+          value,
+        );
+        continue;
+      }
+      // Namespace dictionaries hold stable backing-variable names, so the
+      // initializer only needs to update the corresponding backing variable.
+      initializerCode.push(
+        ...definition.compileSet(value, this.getEvaluationContext()),
+      );
+    }
+    if (initializerCode.length > 0) {
+      this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(
+        initializerCode,
+      );
+    }
+  }
+
+  private getSourceNamespaceDiagnosticNode(
+    namespace: SourceNamespace,
+    member?: string,
+  ): ASTNode | null {
+    return (
+      (member ? namespace.memberDeclarationNodes.get(member) : undefined) ??
+        namespace.declarations[0] ??
+        namespace.parentSourceNamespace?.memberDeclarationNodes.get(
+          namespace.identifier,
+        ) ??
+        namespace.parentSourceNamespace?.declarations[0] ??
+        null
+    );
+  }
+
+  /** Returns the immediate runtime members for one schema-backed namespace. */
+  private getSourceNamespaceDictionaryMembers(
+    namespace: SourceNamespace,
+  ): [string, TangibleValue][] {
+    let members: [string, TangibleValue][] = [];
+    let report = (name: string, message: string) => {
+      let node = this.getSourceNamespaceDiagnosticNode(namespace, name);
+      if (node != null) this.reportError(node, message);
+    };
+    let addValue = (name: string, definition: unknown) => {
+      if (!isSourceNamespaceVariableDefinition(definition)) {
+        report(
+          name,
+          `Namespace dictionary member '${namespace.fullPath}.${name}' is not a value`,
+        );
+        return;
+      }
+      // DF copies values inserted into a dictionary. Store the global
+      // variable name itself, and turn that name into `%var(...)` when
+      // the namespace member is dynamically accessed.
+      members.push([
+        name,
+        new StringValue(
+          getSourceNamespaceMemberBackendName(
+            definition.namespace.path,
+            definition.name,
+          ),
+          definition.astNode,
+        ),
+      ]);
+    };
+    let addFunction = (name: string, definition: unknown) => {
+      if (!isFunctionDefinition(definition)) {
+        report(
+          name,
+          `Namespace dictionary member '${namespace.fullPath}.${name}' is not a function`,
+        );
+        return;
+      }
+      members.push([
+        name,
+        new StringValue(definition.name, definition.astNode),
+      ]);
+    };
+    let addChild = (name: string, child: SourceNamespace | undefined) => {
+      if (child == undefined) {
+        report(
+          name,
+          `Namespace dictionary member '${namespace.fullPath}.${name}' is missing its nested namespace`,
+        );
+        return;
+      }
+      if (!child.runtimeBacked) {
+        report(
+          name,
+          `Nested namespace '${child.fullPath}' has no runtime dictionary`,
+        );
+        return;
+      }
+      members.push([name, new StringValue(child.dictionaryBackendName)]);
+    };
+
+    // A conforming namespace stores its shape's declared fields. Its own
+    // schema, when present, instead describes a container of child
+    // namespaces and is handled below.
+    if (namespace.effectiveSchema?.kind == "shape") {
+      for (const field of namespace.effectiveSchema.fields.values()) {
+        let definition = namespace.members[field.name];
+        if (definition == undefined) continue; // optional field omitted
+        if (field.kind == "value") addValue(field.name, definition);
+        else if (field.kind == "function") addFunction(field.name, definition);
+        else addChild(field.name, namespace.children.get(field.name));
+      }
+      return members;
+    }
+
+    let schema = namespace.schema;
+    if (schema == null) return members;
+    if (schema.kind == "value") {
+      for (const [name, definition] of Object.entries(namespace.members)) {
+        addValue(name, definition);
+      }
+      return members;
+    }
+    if (schema.kind == "function") {
+      for (const [name, definition] of Object.entries(namespace.members)) {
+        addFunction(name, definition);
+      }
+      return members;
+    }
+    for (const [name, child] of namespace.children) {
+      addChild(name, child);
+    }
+    return members;
+  }
+
+  /**
+   * Each schema namespace gets an immediate-member dictionary. Children are
+   * initialized first, so parent entries can point at already-created child
+   * dictionaries rather than constructing a recursive monolith.
+   */
+  private compileSourceNamespaceDictionaries() {
+    let dictionaryCode: CodeBlock[] = [];
+    let namespaces = [...this.env.types.sourceNamespaces]
+      .filter((namespace) => namespace.runtimeBacked)
+      .sort((a, b) => b.path.length - a.path.length);
+
+    for (const namespace of namespaces) {
+      let entries = this.getSourceNamespaceDictionaryMembers(namespace);
+      if (entries.length > DICT_LENGTH_LIMIT) {
+        let node = this.getSourceNamespaceDiagnosticNode(namespace);
+        if (node != null) {
+          this.reportError(
+            node,
+            `Namespace '${namespace.fullPath}' has ${entries.length} runtime members, exceeding DiamondFire's dictionary limit of ${DICT_LENGTH_LIMIT}`,
+          );
+        }
+      }
+      let dictionary = this.env.types.getSourceNamespaceRuntimeValue(namespace);
+      if (!(dictionary instanceof VariableValue)) {
+        let node = this.getSourceNamespaceDiagnosticNode(namespace);
+        if (node != null) {
+          this.reportError(
+            node,
+            `Namespace '${namespace.fullPath}' has no writable runtime dictionary`,
+          );
+        }
+        continue;
+      }
+      let keys = this.tempVarProvider.newTempVar(Type.list(Type.str));
+      let values = this.tempVarProvider.newTempVar(Type.list(Type.any));
+      dictionaryCode.push(
+        ...this.compileListContents(
+          keys,
+          entries.map(([name]) => new StringValue(name)),
+        ),
+        ...this.compileListContents(values, entries.map(([, value]) => value)),
+        new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+          action: "CreateDict",
+          args: [dictionary, keys, values],
+        }),
+      );
+    }
+    if (dictionaryCode.length > 0) {
+      this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(
+        dictionaryCode,
+      );
+    }
+  }
+
+  compile(
+    { outputFormat, splitToLength = -1 }: {
+      outputFormat: "GZIP" | "DFONLINE";
+      splitToLength?: number;
+    },
+  ) {
+    let declarationsToCompile = this.processLineDeclarations(
+      this.getCompilableTopLevelStatements(),
+    );
+    this.compileSourceNamespaceDictionaries();
+    this.compileSourceNamespaceInitializers();
+
+    for (const [lineEntry, declaration] of declarationsToCompile) {
+      this.tempVarProvider.resetCount();
+      if (
+        declaration instanceof EventStatement ||
+        declaration instanceof FunctionStatement
+      ) {
+        if (!(declaration.chunk instanceof ChunkExpression)) continue;
+        lineEntry.code.push(...declaration.chunk.statements.map(
+          (s) =>
+            this.compileStatement(s, {
+              lineStatement: declaration,
+              lineEntry: lineEntry,
+            }),
+        ));
+      }
+    }
+
+    //=- join code lines together and optimize them -=\\
+
+    const optimizer = new CodeOptimizer(this.env.types);
+
+    let output: Map<HeaderType, { [name: string]: string }> = new Map([
+      [DFCodeblockName.PLAYER_EVENT, {}],
+      [DFCodeblockName.ENTITY_EVENT, {}],
+      [DFCodeblockName.GAME_EVENT, {}],
+      [DFCodeblockName.FUNCTION, {}],
+      [DFCodeblockName.PROCESS, {}],
+    ]);
+    for (let [headerType, lineList] of this.codeLines.entries()) {
+      for (let [name, line] of Object.entries(lineList)) {
+        try {
+          let joinedCode = [line.headerBlock!, ...line.code.flat()];
+
+          if (this.env.optimizationsEnabled) {
+            optimizer.optimize(joinedCode);
+          }
+
+          let outputLines: CodeBlock[][];
+
+          if (splitToLength != -1) {
+            outputLines = SliceCodeLine(joinedCode, splitToLength);
+          } else {
+            outputLines = [joinedCode];
+          }
+
+          for (let outLine of outputLines) {
+            let firstBlock = outLine[0] as ActionBlock;
+
+            let serialized: string = "error :(";
+            if (outputFormat == "DFONLINE") {
+              serialized = `https://dfonline.dev/edit/?template=${
+                gzipize(jsonize(outLine))
+              }`;
+            } else {
+              serialized = gzipize(jsonize(outLine));
+            }
+
+            output.get(firstBlock.block as HeaderType)![firstBlock.action] =
+              serialized;
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message == SPLIT_FAILED_ERROR_MESSAGE) {
+            let errorMessage =
+              `Could not automatically split code line ${headerType} '${name}'.\n` +
+              `This is often caused by using percent codes inside line variables or using percent codes inside %var().\n` +
+              `Try manually splitting this code line into separate functions.`;
+            let astNode = line.headerBlock?.astNode;
+            if (
+              astNode &&
+              (astNode instanceof EventStatement ||
+                astNode instanceof FunctionStatement)
+            ) {
+              this.errors.push(
+                new TCNodeError(
+                  (astNode.chunk as ChunkExpression).opener ?? astNode.chunk,
+                  ErrorType.COMPILER,
+                  errorMessage,
+                ),
+              );
+            } else {
+              this.errors.push(
+                new TCStandaloneError(ErrorType.COMPILER, errorMessage),
+              );
+            }
+          } else {
+            this.errors.push(
+              new TCStandaloneError(
+                ErrorType.COMPILER,
+                `There was an internal compiler error while compiling code line ${headerType} ${name}. Please report the below text (alongside any scripts contributing to this code line) to Terracotta developers.\n` +
+                  "#".repeat(60) +
+                  `\n${e}` +
+                  (e instanceof Error ? `\n${e.stack}\n` : "") +
+                  "#".repeat(60),
+              ),
+            );
+          }
+        }
+      }
+    }
+
+    return output;
+  }
 }
