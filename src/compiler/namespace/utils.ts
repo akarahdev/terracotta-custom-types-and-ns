@@ -1,6 +1,6 @@
 import { sign } from "node:crypto";
 import { Type } from "../../typeProcessor/type.ts";
-import { DefinitionType, FunctionDefinition, isFunctionDefinition, isPropertyDefinition, isValueDefinition, ParameterSignature } from "./definition.ts";
+import { DefinitionType, FunctionDefinition, isFunctionDefinition, isNamespaceVariableDefinition, isPropertyDefinition, isValueDefinition, ParameterSignature } from "./definition.ts";
 import { Namespace } from "./namespace.ts";
 
 /** Returns true if `func` is able to be called as a method of `type` */
@@ -27,6 +27,9 @@ export function getNamespaceMemberType(namespace: Namespace, member: string) {
         }
         else if (isPropertyDefinition(def)) {
             return def.type;
+        }
+        else if (isNamespaceVariableDefinition(def)) {
+            return def.returnType;
         }
     }
     return Type.void;

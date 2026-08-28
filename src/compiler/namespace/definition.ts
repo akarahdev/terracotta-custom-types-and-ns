@@ -12,9 +12,11 @@ export enum DefinitionType {
     FUNCTION,
     VALUE,
     PROPERTY,
+    /** A compiler-defined global variable exposed as a member of a source namespace. */
+    NAMESPACE_VARIABLE,
 }
 
-export type Definition = FunctionDefinition | ValueDefinition | PropertyDefinition;
+export type Definition = FunctionDefinition | ValueDefinition | PropertyDefinition | NamespaceVariableDefinition;
 
 export interface ParameterSignatureEntry {
     type: Type,
@@ -33,6 +35,11 @@ export interface ParameterSignature {
 export interface FunctionCallExtraInfo {
     /** If present, insert this value at the start of the arguments list */
     methodCallOf?: TangibleValue,
+    /** Runtime dictionary/key pair for a schema-backed namespace function lookup. */
+    runtimeNamespaceAccess?: {
+        dictionary: TangibleValue,
+        key: TangibleValue,
+    },
 }
 
 export interface FunctionDefinition {
@@ -55,6 +62,13 @@ export interface FunctionDefinition {
      * If true, EmptyValue should be passed in for every CodeValue entry in the namedArgs map
      * */
     manuallyCompilesNamedArgs?: boolean,
+    /** This function definition is dispatched through a namespace dictionary. */
+    runtimeNamespaceFunction?: boolean,
+    /**
+     * Valid invocation syntax for a dynamically-resolved schema function.
+     * Ordinary calls use Function; `start` uses Process.
+     */
+    runtimeNamespaceCallKind?: "function" | "process" | "either",
     compile(args: CodeValue[], namedArgs: Map<AtomicExpression, [CodeValue, Expression]>, ctx: EvaluationContext, callNode: CallExpression | CallOrStartExpression, extraInfo?: FunctionCallExtraInfo): [CodeValue, CodeBlock[]];
 
     /** Is only used for language server purposes, the compiler should never touch this */
@@ -100,6 +114,21 @@ export interface PropertyDefinition {
     autocompleteSortPrefix?: string
 }
 
+/**
+ * Namespace variables behave like ordinary values when read, but also need a
+ * dedicated setter when reached through a qualified namespace access.
+ */
+export interface NamespaceVariableDefinition {
+    definitionType: DefinitionType.NAMESPACE_VARIABLE,
+    name: string,
+    returnType: Type,
+    compile(ctx: EvaluationContext): [TangibleValue, CodeBlock[]],
+    compileSet(newValue: TangibleValue, ctx: EvaluationContext): CodeBlock[],
+
+    // language-server metadata
+    astNode?: ASTNode,
+}
+
 export function isFunctionDefinition(obj): obj is FunctionDefinition {
     return (
         obj instanceof Object
@@ -118,6 +147,13 @@ export function isPropertyDefinition(obj): obj is PropertyDefinition {
     return (
         obj instanceof Object
         && obj.definitionType == DefinitionType.PROPERTY
+    );
+}
+
+export function isNamespaceVariableDefinition(obj): obj is NamespaceVariableDefinition {
+    return (
+        obj instanceof Object
+        && obj.definitionType == DefinitionType.NAMESPACE_VARIABLE
     );
 }
 

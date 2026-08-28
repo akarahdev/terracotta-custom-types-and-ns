@@ -7,7 +7,7 @@ import { Type } from "../typeProcessor/type.ts";
 import { TypeProcessor, VariableId, VariableScope } from "../typeProcessor/typeProcessor.ts";
 import { parseTcNumber } from "../util/utils.ts";
 import * as NBT from "nbtify";
-import { FunctionDefinition } from "./namespace/definition.ts";
+import { FunctionCallExtraInfo, FunctionDefinition } from "./namespace/definition.ts";
 import { Namespace } from "./namespace/namespace.ts";
 
 //=--------------------=\\
@@ -83,7 +83,8 @@ export class FunctionValue extends InternalValue {
     constructor(
         public definition: FunctionDefinition,
         public methodCallOf?: TangibleValue,
-        astNode?: ASTNode
+        astNode?: ASTNode,
+        public runtimeNamespaceAccess?: NonNullable<FunctionCallExtraInfo["runtimeNamespaceAccess"]>,
     ) { super(astNode); }
 }
 

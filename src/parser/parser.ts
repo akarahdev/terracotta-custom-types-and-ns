@@ -1,6 +1,6 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
 import { BinaryExpression, Expression, AtomicExpression, GroupExpression, MissingExpression, ListExpression, CallExpression, AccessExpression, ChunkExpression, VariableExpression, CallOrStartExpression, TypeExpression, TypeAssignmentExpression, ParameterExpression, MultiTypeAssignmentExpression, DictionaryEntryExpression, DictionaryExpression, UnaryPrefixExpression, BracketedAccessExpression, TypecastExpression, DictionaryTypeExpression, DictionaryTypeEntryExpression, PerSelectedExpression, SelectionExpression } from "../ast/expression.ts";
-import { EventStatement, ExpressionStatement, RepeatStatement, ReturnStatement, SingleKeywordStatement, Statement, FunctionStatement, IfStatement, WhileStatement, ForStatement, DoStatement, AssignmentStatement, PerSelectedStatement, DeclareStatement, TypeStatement, ExtendStatement, IncrementStatement } from "../ast/statement.ts";
+import { EventStatement, ExpressionStatement, RepeatStatement, ReturnStatement, SingleKeywordStatement, Statement, FunctionStatement, IfStatement, WhileStatement, ForStatement, DoStatement, AssignmentStatement, PerSelectedStatement, DeclareStatement, TypeStatement, ExtendStatement, IncrementStatement, FunctionSchemaTypeExpression, ImportStatement, NamespaceSchemaFieldStatement, NamespaceSchemaFunctionStatement, NamespaceSchemaReferenceExpression, NamespaceSchemaStatement, NamespaceSchemaTypeExpression, NamespaceShapeSchemaExpression, NamespaceStatement, NamespaceVariableStatement } from "../ast/statement.ts";
 import { Token, TokenType, BindingPower } from "../ast/token.ts";
 import { ErrorPositionMode, ErrorType, TCError, TCNodeError } from "../error/error.ts";
 import { dirWithoutRelations } from "../util/debug.ts";
@@ -36,6 +36,8 @@ export class Parser {
     ) {
         this.tokenNUDProperties = new Map<TokenType, NUDProcessingProperties>([
             [TokenType.IDENTIFIER,      {bp: BindingPower.ATOM,     processor: this.parseAtomicExpression}],
+            // `namespace` remains usable as the reflection helper in expression position.
+            [TokenType.NAMESPACE,       {bp: BindingPower.ATOM,     processor: this.parseAtomicExpression}],
             [TokenType.NUMERIC_LITERAL, {bp: BindingPower.ATOM,     processor: this.parseAtomicExpression}],
             [TokenType.NUMEXPR_LITERAL, {bp: BindingPower.ATOM,     processor: this.parseAtomicExpression}],
             [TokenType.STRING_LITERAL,  {bp: BindingPower.ATOM,     processor: this.parseAtomicExpression}],
@@ -131,6 +133,8 @@ export class Parser {
             [TokenType.DECLARE,             this.parseDeclareStatement],
             [TokenType.TYPE,                this.parseTypeStatement],
             [TokenType.EXTEND,              this.parseExtendStatement],
+            [TokenType.NAMESPACE,           this.parseNamespaceStatement],
+            [TokenType.IMPORT,              this.parseImportStatement],
 
             [TokenType.FOR,                 this.parseForStatement],
             [TokenType.REPEAT,              this.parseRepeatStatement],
@@ -275,6 +279,7 @@ export class Parser {
             && type != TokenType.STRING_LITERAL
             && type != TokenType.STYLED_LITERAL
             && type != TokenType.IDENTIFIER
+            && type != TokenType.NAMESPACE
         ) {
             this.reportUndisplayedError(
                 token,
@@ -372,12 +377,14 @@ export class Parser {
 
     parseCallOrStartExpression = () => {
         let keyword = this.consume();
-        let [name, nameFound] = this.expectOrMissing([TokenType.IDENTIFIER, TokenType.STRING_LITERAL], true)
+        // Stop before the argument list itself, but retain property and
+        // bracket access so `start workers[id](...)` has a real call target.
+        let callee = this.parseExpression(BindingPower.CALL);
         let args: ListExpression | null = null;
         if (this.currentToken().type == TokenType.OPEN_PAREN) {
             args = this.parseListExpression(TokenType.OPEN_PAREN, TokenType.CLOSE_PAREN, TokenType.COMMA);
         }
-        return new CallOrStartExpression(keyword, name, args);
+        return new CallOrStartExpression(keyword, callee, args);
     }
 
     parseBracketedAccessExpression = (left: Expression, bp: number): BracketedAccessExpression => {        
@@ -734,6 +741,210 @@ export class Parser {
         let [_, openCurlyFound] = this.expect(TokenType.OPEN_CURLY, false);
         let chunk = openCurlyFound ? this.parseChunkExpression(TokenType.OPEN_CURLY, TokenType.CLOSE_CURLY)! : new MissingExpression(this.currentToken().startPos);
         return new ExtendStatement(keyword, type, chunk);
+    }
+
+    /** Parses a dotted identifier path without accepting language keywords as segments. */
+    parseNamespacePath = (): {path: Token[], dots: Token[]} => {
+        let path: Token[] = [];
+        let dots: Token[] = [];
+        let [first, firstFound] = this.expectOrMissing(TokenType.IDENTIFIER);
+        path.push(first);
+        while (this.currentToken().type == TokenType.DOT) {
+            dots.push(this.consume());
+            let [segment] = this.expectOrMissing(TokenType.IDENTIFIER);
+            path.push(segment);
+        }
+        return {path, dots};
+    }
+
+    /**
+     * Checks whether the current `namespace` token starts a declaration instead of
+     * the `namespace` reflection helper used in expression position.
+     */
+    namespaceDeclarationFollows = (): boolean => {
+        if (this.currentToken().type != TokenType.NAMESPACE) return false;
+        let pos = this.position + 1;
+        if (this.tokens[pos]?.type != TokenType.IDENTIFIER) return false;
+        pos++;
+        while (this.tokens[pos]?.type == TokenType.DOT) {
+            if (this.tokens[pos + 1]?.type != TokenType.IDENTIFIER) return false;
+            pos += 2;
+        }
+        return this.tokens[pos]?.type == TokenType.OPEN_CURLY;
+    }
+
+    parseNamespaceVariableStatement = (): NamespaceVariableStatement => {
+        let [name] = this.expectOrMissing(TokenType.IDENTIFIER);
+        // The namespace design examples historically used `name: 1` and
+        // `name: s"text"` for inferred initializers. Preserve the ordinary
+        // `name: type = value` form while accepting the unambiguous literal
+        // shorthand as well.
+        if (
+            this.currentToken().type == TokenType.COLON
+            && [
+                TokenType.NUMERIC_LITERAL,
+                TokenType.NUMEXPR_LITERAL,
+                TokenType.STRING_LITERAL,
+                TokenType.STYLED_LITERAL,
+                TokenType.PLUS,
+                TokenType.MINUS,
+                TokenType.OPEN_PAREN,
+                TokenType.OPEN_BRACKET,
+                TokenType.OPEN_CURLY,
+            ].includes(this.lookAhead(1).type)
+        ) {
+            let colon = this.consume();
+            let initialValue = this.parseExpression(BindingPower.DEFAULT);
+            this.expect(TokenType.SEMICOLON);
+            return new NamespaceVariableStatement(name, null, colon, initialValue);
+        }
+        let assignedType = this.parseTypeAssignmentExpression(true);
+        let assignmentOperator: Token | null = null;
+        let initialValue: Expression | null = null;
+        if (this.currentToken().type == TokenType.EQUALS) {
+            assignmentOperator = this.consume();
+            initialValue = this.parseExpression(BindingPower.DEFAULT);
+        }
+        this.expect(TokenType.SEMICOLON);
+        return new NamespaceVariableStatement(name, assignedType, assignmentOperator, initialValue);
+    }
+
+    parseFunctionSchemaType = (): FunctionSchemaTypeExpression => {
+        let keyword = this.consume();
+        let params = this.parseTypedListExpression(TokenType.OPEN_PAREN, TokenType.CLOSE_PAREN, TokenType.COMMA, this.parseParameterExpression, true);
+        let [arrow] = this.expectOrMissing(TokenType.ARROW);
+        let returnType = this.parseTypeExpression() ?? new TypeExpression(Token.missing(this.currentToken().startPos), null);
+        return new FunctionSchemaTypeExpression(keyword, params, arrow, returnType);
+    }
+
+    parseNamespaceSchemaFunctionStatement = (): NamespaceSchemaFunctionStatement => {
+        let keyword = this.consume();
+        let [name] = this.expectOrMissing(TokenType.IDENTIFIER);
+        let params = this.parseTypedListExpression(TokenType.OPEN_PAREN, TokenType.CLOSE_PAREN, TokenType.COMMA, this.parseParameterExpression, true);
+        let [arrow] = this.expectOrMissing(TokenType.ARROW);
+        let returnType = this.parseTypeExpression() ?? new TypeExpression(Token.missing(this.currentToken().startPos), null);
+        let [semicolon] = this.expectOrMissing(TokenType.SEMICOLON);
+        return new NamespaceSchemaFunctionStatement(keyword, name, params, arrow, returnType, semicolon);
+    }
+
+    parseNamespaceShapeSchema = (keyword: Token): NamespaceShapeSchemaExpression => {
+        let [opener] = this.expectOrMissing(TokenType.OPEN_CURLY);
+        let members: (NamespaceSchemaFieldStatement | NamespaceSchemaFunctionStatement)[] = [];
+        while (this.currentToken().type != TokenType.CLOSE_CURLY && this.currentToken().type != TokenType.EOF) {
+            let comments = this.consumeComments();
+            if (this.currentToken().type == TokenType.CLOSE_CURLY || this.currentToken().type == TokenType.EOF) break;
+
+            let member: NamespaceSchemaFieldStatement | NamespaceSchemaFunctionStatement;
+            if (this.currentToken().type == TokenType.FUNCTION || this.currentToken().type == TokenType.PROCESS) {
+                member = this.parseNamespaceSchemaFunctionStatement();
+            } else if (this.currentToken().type == TokenType.IDENTIFIER) {
+                let name = this.consume();
+                let optionalMarker = this.currentToken().type == TokenType.QUESTION ? this.consume() : null;
+                let [colon] = this.expectOrMissing(TokenType.COLON);
+                let schemaType = this.parseNamespaceSchemaType();
+                let assignmentOperator: Token | null = null;
+                let defaultValue: Expression | null = null;
+                if (this.currentToken().type == TokenType.EQUALS) {
+                    assignmentOperator = this.consume();
+                    defaultValue = this.parseExpression(BindingPower.DEFAULT);
+                }
+                let [semicolon] = this.expectOrMissing(TokenType.SEMICOLON);
+                member = new NamespaceSchemaFieldStatement(name, optionalMarker, colon, schemaType, assignmentOperator, defaultValue, semicolon);
+            } else {
+                this.reportError(this.currentToken(), "Expected a schema field or function declaration");
+                this.consume();
+                continue;
+            }
+            member.attachedComments.push(...comments);
+            members.push(member);
+        }
+        let [closer] = this.expectOrMissing(TokenType.CLOSE_CURLY);
+        return new NamespaceShapeSchemaExpression(keyword, opener, members, closer);
+    }
+
+    parseNamespaceSchemaType = (): NamespaceSchemaTypeExpression => {
+        if (this.currentToken().type == TokenType.FUNCTION) {
+            return this.parseFunctionSchemaType();
+        }
+        if (this.currentToken().type == TokenType.NAMESPACE) {
+            let keyword = this.consume();
+            if (this.currentToken().type == TokenType.OPEN_CURLY) {
+                return this.parseNamespaceShapeSchema(keyword);
+            }
+            let {path, dots} = this.parseNamespacePath();
+            return new NamespaceSchemaReferenceExpression(keyword, path, dots);
+        }
+        return this.parseTypeExpression() ?? new TypeExpression(Token.missing(this.currentToken().startPos), null);
+    }
+
+    parseNamespaceSchemaStatement = (): NamespaceSchemaStatement => {
+        let name = this.consume();
+        let [colon] = this.expectOrMissing(TokenType.COLON);
+        let schemaType = this.parseNamespaceSchemaType();
+        let [semicolon] = this.expectOrMissing(TokenType.SEMICOLON);
+        return new NamespaceSchemaStatement(name, colon, schemaType, semicolon);
+    }
+
+    parseNamespaceChunk = (): ChunkExpression | null => {
+        let [opener, openerFound] = this.expect(TokenType.OPEN_CURLY);
+        if (!openerFound) return null;
+        let statements: Statement[] = [];
+        while (this.currentToken().type != TokenType.CLOSE_CURLY && this.currentToken().type != TokenType.EOF) {
+            let comments = this.consumeComments();
+            if (this.currentToken().type == TokenType.CLOSE_CURLY || this.currentToken().type == TokenType.EOF) break;
+
+            let statement: Statement | null = null;
+            if (this.currentToken().type == TokenType.NAMESPACE) {
+                statement = this.parseNamespaceStatement();
+                if (statement == null) {
+                    // `namespace.getKeys(...)` is valid in ordinary expression
+                    // position but not in a namespace declaration body. Consume
+                    // it here so malformed input cannot leave this parser loop
+                    // stalled on the same token.
+                    this.reportError(this.currentToken(), "Expected a namespace declaration");
+                    this.consume();
+                    continue;
+                }
+            } else if (this.currentToken().type == TokenType.FUNCTION || this.currentToken().type == TokenType.PROCESS) {
+                statement = this.parseFunctionStatement();
+            } else if (this.currentToken().type == TokenType.IDENTIFIER) {
+                statement = this.currentToken().value == "schema" && this.lookAhead(1).type == TokenType.COLON
+                    ? this.parseNamespaceSchemaStatement()
+                    : this.parseNamespaceVariableStatement();
+            } else {
+                this.reportError(this.currentToken(), "Only namespace declarations, variables, functions, processes, and schemas are allowed inside a namespace");
+                this.consume();
+            }
+
+            if (statement != null) {
+                statement.attachedComments.push(...comments);
+                statements.push(statement);
+            }
+        }
+        let [closer] = this.expectOrMissing(TokenType.CLOSE_CURLY);
+        return new ChunkExpression(opener, statements, closer);
+    }
+
+    parseNamespaceStatement = (): NamespaceStatement | null => {
+        // This lets `namespace.getKeys(...)` remain an ordinary expression.
+        if (!this.namespaceDeclarationFollows()) return null;
+        let keyword = this.consume();
+        let {path, dots} = this.parseNamespacePath();
+        let chunk = this.parseNamespaceChunk() ?? new MissingExpression(this.currentToken().startPos);
+        return new NamespaceStatement(keyword, path, dots, chunk);
+    }
+
+    parseImportStatement = (): ImportStatement => {
+        let keyword = this.consume();
+        let {path, dots} = this.parseNamespacePath();
+        let asKeyword: Token | null = null;
+        let alias: Token | null = null;
+        if (this.currentToken().type == TokenType.AS) {
+            asKeyword = this.consume();
+            [alias] = this.expectOrMissing(TokenType.IDENTIFIER);
+        }
+        let [semicolon] = this.expectOrMissing(TokenType.SEMICOLON);
+        return new ImportStatement(keyword, path, dots, asKeyword, alias, semicolon);
     }
 
     parseExpressionStatement = (): ExpressionStatement | AssignmentStatement | IncrementStatement => {

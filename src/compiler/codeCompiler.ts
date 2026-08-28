@@ -1,5 +1,5 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
-import { AssignmentStatement, DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, PerSelectedStatement, SingleKeywordStatement, Statement, WhileStatement, DeclareStatement, IncrementStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
+import { AssignmentStatement, DoStatement, EventStatement, ExpressionStatement, ForStatement, FunctionStatement, IfStatement, RepeatStatement, ReturnStatement, PerSelectedStatement, SingleKeywordStatement, Statement, WhileStatement, DeclareStatement, IncrementStatement, TypeStatement, ExtendStatement, ImportStatement, NamespaceSchemaStatement, NamespaceStatement, NamespaceVariableStatement } from "../ast/statement.ts";
 import { Token, TokenType } from "../ast/token.ts";
 import { getExtensionFunctionBackendName, isVariableEntry, TypeProcessor, VariableScope } from "../typeProcessor/typeProcessor.ts";
 import { getOrCreateDictLayer, getOrCreateMapLayer, ps, tcParseNumber, toNameCase, upperFirst } from "../util/utils.ts";
@@ -12,8 +12,8 @@ import { CodeValue, EmptyValue, FunctionValue, ItemValue, MissingValue, MultiVal
 import { Namespace } from "./namespace/namespace.ts";
 import { TempVarProvider } from "./tempVarProvider.ts";
 import { Operations } from "./operations.ts";
-import { DefinitionType, FunctionCallExtraInfo, FunctionDefinition, isFunctionDefinition, isPropertyDefinition, isValueDefinition } from "./namespace/definition.ts";
-import { Type } from "../typeProcessor/type.ts";
+import { DefinitionType, FunctionCallExtraInfo, FunctionDefinition, isFunctionDefinition, isNamespaceVariableDefinition, isPropertyDefinition, isValueDefinition } from "./namespace/definition.ts";
+import { NamespaceTypeData, Type } from "../typeProcessor/type.ts";
 import { DFCodeblockName, DFRank, dfTypeToTC, DFValueType, DICT_LENGTH_LIMIT, LIST_LENGTH_LIMIT, STRING_LENGTH_LIMIT, TC_HEADER, tcTypeToDFParamType } from "../df/constants.ts";
 import { CodeOptimizer } from "./optimizer/optimizer.ts";
 import { count, warn } from "node:console";
@@ -28,6 +28,8 @@ import { ItemLibrary } from "./itemLibrary.ts";
 import { isSNBTValid } from "../util/snbtUtils.ts";
 import { INVERTIBLE_SELECT_ACTIONS, KEYWORDS } from "../data/constants.ts";
 import { getImprovedErrorNode } from "../error/errorUtils.ts";
+import { isSourceNamespaceVariableDefinition, SourceNamespace } from "./namespace/sourceNamespace.ts";
+import { COMPILE_START_PROCESS } from "./namespace/compileCallFunction.ts";
 
 export type EventType = DFCodeblockName.PLAYER_EVENT | DFCodeblockName.ENTITY_EVENT | DFCodeblockName.GAME_EVENT;
 export type UserMethodType = DFCodeblockName.FUNCTION | DFCodeblockName.PROCESS; 
@@ -538,6 +540,14 @@ export class CodeCompiler {
         return [value, [...argCode, ...code]];
     }
 
+    /** Source namespace processes require explicit `start` syntax. */
+    private isProcessFunctionDefinition(definition: FunctionDefinition): boolean {
+        return (
+            definition.compile == COMPILE_START_PROCESS
+            || definition.astNode?.headerType == DFCodeblockName.PROCESS
+        );
+    }
+
     /** 
      * ASSUMES A SIMPLIFIED `BooleanOperation` IS BEING PASSED IN!!
      *  
@@ -743,7 +753,30 @@ export class CodeCompiler {
         if (mode == "member" && accessor instanceof TangibleValue) {
             let tvp = context.perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider;
     
-            let accesseeType = accessee.getType(this.env.types).getRuntimeType();
+            let declaredAccesseeType = accessee.getType(this.env.types);
+            let accesseeType = declaredAccesseeType.getRuntimeType();
+
+            // Schema function values are stored as their mangled DF names in a
+            // dictionary.  Keep them as FunctionValues here so a subsequent
+            // `()` emits a dynamic Call Function/Start Process instead of
+            // treating the retrieved string as an ordinary value.
+            if (
+                accessee instanceof TangibleValue
+                && declaredAccesseeType.matches(Type.namespace)
+                && (declaredAccesseeType.data as NamespaceTypeData).namespace instanceof SourceNamespace
+            ) {
+                let namespace = (declaredAccesseeType.data as NamespaceTypeData).namespace as SourceNamespace;
+                let member = accessor instanceof StringValue && accessor.isCompileTimeConstant()
+                    ? accessor.value
+                    : undefined;
+                let definition = namespace.getDynamicFunctionDefinition?.(member);
+                if (definition != null) {
+                    return [new FunctionValue(definition, undefined, expression, {
+                        dictionary: accessee,
+                        key: accessor,
+                    }), code];
+                }
+            }
     
             // list accessing
             if (accesseeType.matches(Type.list)) {
@@ -772,9 +805,25 @@ export class CodeCompiler {
 
             let definition = accesseeType.getPropertyDefinition(accessor);
             if (isFunctionDefinition(definition)) {
-                return [new FunctionValue(definition, accessee instanceof TangibleValue ? accessee : undefined, expression), code];
+                if (definition.runtimeNamespaceFunction && accessee instanceof TangibleValue) {
+                    return [new FunctionValue(definition, undefined, expression, {
+                        dictionary: accessee,
+                        key: new StringValue(accessor, expression.propertyName),
+                    }), code];
+                }
+                // Namespace members are not receiver methods.  Schema-backed
+                // namespaces happen to be tangible dictionary variables, so
+                // relying on tangibility alone would incorrectly prepend the
+                // namespace dictionary to ordinary namespace function calls.
+                let methodCallOf = (
+                    !accesseeType.matches(Type.namespace) && accessee instanceof TangibleValue
+                ) ? accessee : undefined;
+                return [new FunctionValue(definition, methodCallOf, expression), code];
             }
             else if (isValueDefinition(definition)) {
+                return definition.compile(this.getEvaluationContext(context.perSelectedMode));
+            }
+            else if (isNamespaceVariableDefinition(definition)) {
                 return definition.compile(this.getEvaluationContext(context.perSelectedMode));
             }
             else if (isPropertyDefinition(definition)) {
@@ -793,8 +842,22 @@ export class CodeCompiler {
         mode: "member" | "property",
         context: ExpressionContext
     ): CodeBlock[] {
-        let accesseeType = accessee.getType(this.env.types).getRuntimeType();
+        let declaredAccesseeType = accessee.getType(this.env.types);
+        let accesseeType = declaredAccesseeType.getRuntimeType();
         if (mode == "member" && accessor instanceof TangibleValue) {
+            if (
+                declaredAccesseeType.matches(Type.namespace)
+                && (declaredAccesseeType.data as NamespaceTypeData).namespace instanceof SourceNamespace
+            ) {
+                let namespace = (declaredAccesseeType.data as NamespaceTypeData).namespace as SourceNamespace;
+                return this.compileSourceNamespaceDynamicSet(
+                    namespace,
+                    accessee,
+                    accessor,
+                    value,
+                    context,
+                );
+            }
             if (accesseeType.matches(Type.list)) {
                 return [new ActionBlock(DFCodeblockName.SET_VARIABLE,{
                     action: "SetListValue",
@@ -807,12 +870,98 @@ export class CodeCompiler {
                 })];
             }
         } else if (mode == "property" && typeof accessor == "string") {
-            let definition = accesseeType.getPropertyDefinition(accessor);
+            let definition = declaredAccesseeType.getPropertyDefinition(accessor);
             if (isPropertyDefinition(definition)) {
                 return definition.compileSet(value, this.getEvaluationContext(context.perSelectedMode), accessee)
             }
+            if (isNamespaceVariableDefinition(definition)) {
+                return definition.compileSet(value, this.getEvaluationContext(context.perSelectedMode));
+            }
         }
         return [];
+    }
+
+    /**
+     * Writes through a schema namespace's dictionary and keeps every known
+     * compile-time member in sync. Unknown keys deliberately retain ordinary
+     * dictionary behavior, matching the namespace specification's undefined
+     * dynamic-write semantics for keys that are not declared members.
+     */
+    private compileSourceNamespaceDynamicSet(
+        namespace: SourceNamespace,
+        dictionary: TangibleValue,
+        key: TangibleValue,
+        value: TangibleValue,
+        context: ExpressionContext,
+    ): CodeBlock[] {
+        let code: CodeBlock[] = [new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+            action: "SetDictValue",
+            args: [dictionary, key, value],
+        })];
+        let ctx = this.getEvaluationContext(context.perSelectedMode);
+
+        // A dictionary lookup yields a runtime copy/value, while static access
+        // uses a concrete mangled variable or a child dictionary variable. For
+        // each declared immediate member, mirror a matching runtime-key write
+        // to that concrete value. This also makes a later static read observe a
+        // preceding dynamic write.
+        for (const [name, definition] of Object.entries(namespace.members)) {
+            let target: TangibleValue | null = null;
+            if (isNamespaceVariableDefinition(definition)) {
+                let [compiled, targetCode] = definition.compile(ctx);
+                if (targetCode.length == 0 && compiled instanceof TangibleValue) {
+                    target = compiled;
+                }
+            } else {
+                let child = namespace.children.get(name);
+                if (child != undefined) {
+                    let compiled = this.env.types.getSourceNamespaceRuntimeValue(child);
+                    if (compiled instanceof TangibleValue) target = compiled;
+                }
+            }
+            if (target == null) continue;
+
+            code.push(
+                new ActionBlock(DFCodeblockName.IF_VARIABLE, {
+                    action: "=",
+                    args: [key, new StringValue(name)],
+                }),
+                new BracketBlock({type: BracketType.IF, direction: BracketDirection.OPEN}),
+                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                    action: "=",
+                    args: [target, value],
+                }),
+                new BracketBlock({type: BracketType.IF, direction: BracketDirection.CLOSE}),
+            );
+        }
+
+        // When the namespace itself is a known nested member, refresh every
+        // enclosing immediate dictionary. This makes mutation robust whether DF
+        // dictionaries preserve nested values by reference or by value.
+        if (namespace.runtimeBacked) {
+            let child: SourceNamespace = namespace;
+            let parent = namespace.parentSourceNamespace;
+            while (parent != null) {
+                let parentDictionary = this.env.types.getSourceNamespaceRuntimeValue(parent);
+                let childDictionary = this.env.types.getSourceNamespaceRuntimeValue(child);
+                if (
+                    parentDictionary instanceof TangibleValue
+                    && childDictionary instanceof TangibleValue
+                ) {
+                    code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                        action: "SetDictValue",
+                        args: [
+                            parentDictionary,
+                            new StringValue(child.identifier),
+                            childDictionary,
+                        ],
+                    }));
+                }
+                child = parent;
+                parent = parent.parentSourceNamespace;
+            }
+        }
+        return code;
     }
 
     compileExpression(e: Expression | Token, context: ExpressionContext): [CodeValue, CodeBlock[]] {
@@ -859,9 +1008,11 @@ export class CodeCompiler {
 
             let definition: FunctionDefinition | null = null;
             let methodCallOf: TangibleValue | undefined;
+            let runtimeNamespaceAccess: FunctionCallExtraInfo["runtimeNamespaceAccess"];
             if (callee instanceof FunctionValue) {
                 definition = callee.definition;
                 methodCallOf = callee.methodCallOf;
+                runtimeNamespaceAccess = callee.runtimeNamespaceAccess;
             } else if (callee instanceof NamespaceValue) {
                 if (callee.namespace.nameFunction) {
                     definition = callee.namespace.nameFunction;
@@ -875,7 +1026,11 @@ export class CodeCompiler {
             }
 
             if (definition) {
-                let [value, code] = this.compileCallExpression(e, definition, context, {methodCallOf});
+                if (!definition.runtimeNamespaceFunction && this.isProcessFunctionDefinition(definition)) {
+                    this.reportError(e.callee, "Processes must be invoked with 'start'");
+                    return [new MissingValue(e), preCode];
+                }
+                let [value, code] = this.compileCallExpression(e, definition, context, {methodCallOf, runtimeNamespaceAccess});
                 return [value, [...preCode, ...code]];
             }
             else {
@@ -883,26 +1038,72 @@ export class CodeCompiler {
             }
         }
         else if (e instanceof CallOrStartExpression) {
-            let [pcErrors, pcode] = this.pcodeParser.parse(e.callee.value);
-            for (let err of pcErrors) {
-                this.errors.push(new TCNodePCodeError(e.callee,err,ErrorType.COMPILER));
-            }
-            
             let isProcess = e.keyword.type == TokenType.START;
+            let resolvedTarget = e.callee instanceof AtomicExpression
+                ? this.env.types.resolveIdentifier(e.callee.token)
+                : null;
+            let isSourceNamespaceFunctionTarget = (
+                isFunctionDefinition(resolvedTarget)
+                && resolvedTarget.astNode != null
+                && this.env.types.sourceNamespaceFunctionStatements.has(
+                    resolvedTarget.astNode,
+                )
+            );
+            let legacyTarget = e.callee instanceof AtomicExpression
+                && (e.callee.token.type == TokenType.IDENTIFIER || e.callee.token.type == TokenType.STRING_LITERAL)
+                && (
+                    e.callee.token.type == TokenType.STRING_LITERAL
+                    || !isSourceNamespaceFunctionTarget
+                );
 
-            // TODO: if all functions matching the provided pcode have the same signature, use that
-            
-            let isConstant = pcode.length == 1 && pcode[0] instanceof SegmentPCode;
-            let definition = this.env.types.getUserFuncDef(isProcess, e.callee.value, !isConstant);
-            if (definition) {
-                return this.compileCallExpression(e, definition, context);
-            } else {
+            // Preserve the established `call`/`start` behavior for literal and
+            // percent-code names while allowing namespace/member expressions.
+            if (legacyTarget && e.callee instanceof AtomicExpression) {
+                let target = e.callee.token;
+                let [pcErrors, pcode] = this.pcodeParser.parse(target.value);
+                for (let err of pcErrors) {
+                    this.errors.push(new TCNodePCodeError(target, err, ErrorType.COMPILER));
+                }
+                let isConstant = pcode.length == 1 && pcode[0] instanceof SegmentPCode;
+                let definition = this.env.types.getUserFuncDef(isProcess, target.value, !isConstant);
+                if (definition) {
+                    return this.compileCallExpression(e, definition, context);
+                }
                 this.reportError(
-                    e.callee,
-                    `Invalid ${isProcess ? "process" : "function"} name '${e.callee.value}'`
+                    target,
+                    `Invalid ${isProcess ? "process" : "function"} name '${target.value}'`,
                 );
                 return [new MissingValue(e), []];
             }
+
+            let [callee, preCode] = this.compileExpression(e.callee, context);
+            if (!(callee instanceof FunctionValue)) {
+                this.reportError(
+                    e.callee,
+                    `Type '${callee.getType(this.env.types).name}' cannot be ${isProcess ? "started as a process" : "called as a function"}`,
+                    callee,
+                );
+                return [new MissingValue(e), preCode];
+            }
+
+            let definition = callee.definition;
+            if (!definition.runtimeNamespaceFunction) {
+                let definitionIsProcess = this.isProcessFunctionDefinition(definition);
+                if (isProcess != definitionIsProcess) {
+                    this.reportError(
+                        e.callee,
+                        isProcess
+                            ? "This namespace member is a function; call it without 'start'"
+                            : "This namespace member is a process; invoke it with 'start'",
+                    );
+                    return [new MissingValue(e), preCode];
+                }
+            }
+            let [value, code] = this.compileCallExpression(e, definition, context, {
+                methodCallOf: callee.methodCallOf,
+                runtimeNamespaceAccess: callee.runtimeNamespaceAccess,
+            });
+            return [value, [...preCode, ...code]];
         }
         else if (e instanceof BracketedAccessExpression) {
             let [accessee, accesseeCode] = this.compileExpression(e.accessee, context);
@@ -1015,12 +1216,20 @@ export class CodeCompiler {
         else if (e instanceof Token) {
             switch (e.type) {
                 // identifier resolution all happens here
-                case TokenType.IDENTIFIER: {
+                case TokenType.IDENTIFIER:
+                case TokenType.NAMESPACE: {
                     let resolved = this.env.types.resolveIdentifier(e);
                     if (resolved instanceof Namespace) {
+                        if (resolved instanceof SourceNamespace) {
+                            return [this.env.types.getSourceNamespaceRuntimeValue(resolved, e), []];
+                        }
                         return [new NamespaceValue(resolved, e), []];
                     } else if (isFunctionDefinition(resolved)) {
                         return [new FunctionValue(resolved, undefined, e), []];
+                    } else if (isValueDefinition(resolved)) {
+                        return resolved.compile(this.getEvaluationContext(context.perSelectedMode));
+                    } else if (isNamespaceVariableDefinition(resolved)) {
+                        return resolved.compile(this.getEvaluationContext(context.perSelectedMode));
                     } else if (isVariableEntry(resolved)) {
                         return [new VariableValue(resolved.id.name, resolved.id.scope, resolved.type ?? undefined, e), []];
                     }
@@ -1424,6 +1633,7 @@ export class CodeCompiler {
                 // generate path
                 let baseExpression: Expression | undefined;
                 let path: {accesseeType: Type, accessMode: "property" | "member", accessor: TangibleValue | string, expr: AccessExpression | BracketedAccessExpression}[] = [];
+                let consumedCompileTimeNamespacePath = false;
                 const generatePath = (expr: Expression, typeOverride?: Type) => {
                     expr = expr.getRealExpression();
                     if (expr instanceof TypecastExpression) {
@@ -1457,6 +1667,37 @@ export class CodeCompiler {
                 // compile path
                 const walkPath = (currentAccessee: CodeValue, pathIndex: number) => {
                     if (!(currentAccessee instanceof TangibleValue)) {
+                        // Unschema'd source namespaces are compile-time-only
+                        // values. They can still be the first segment of a
+                        // qualified static assignment such as
+                        // `physics.gravity = -9.8`; consume that property and
+                        // continue with its concrete mangled variable.
+                        if (
+                            currentAccessee instanceof NamespaceValue
+                            && pathIndex < path.length
+                            && path[pathIndex].accessMode == "property"
+                        ) {
+                            let segment = path[pathIndex];
+                            if (!this.validateSingleAccess(currentAccessee, segment.accessor, segment.expr, "member")) {
+                                return;
+                            }
+                            let [child, getterCode] = this.compileSingleAccessGet(
+                                currentAccessee,
+                                segment.accessor,
+                                segment.expr,
+                                segment.accessMode,
+                                exprContext,
+                            );
+                            code.push(...getterCode);
+                            // The resulting value replaces the namespace
+                            // segment in the assignment path. This leaves the
+                            // ordinary variable/property setter below to
+                            // handle the rest of the assignment uniformly.
+                            path.splice(pathIndex, 1);
+                            consumedCompileTimeNamespacePath = true;
+                            walkPath(child, pathIndex);
+                            return;
+                        }
                         this.reportError(
                             path[pathIndex]?.expr.accessee ?? currentAccessee.astNode ?? assigneeExpr,
                             `This value cannot be assigned to`,
@@ -1539,6 +1780,7 @@ export class CodeCompiler {
                             if (!(
                                 (assigneeExpr instanceof VariableExpression)
                                 || (assigneeExpr instanceof AtomicExpression && currentAccessee instanceof VariableValue)
+                                || (consumedCompileTimeNamespacePath && currentAccessee instanceof VariableValue)
                             )) {
                                 this.reportError(
                                     assigneeExpr, 
@@ -1548,6 +1790,23 @@ export class CodeCompiler {
                                     currentAccessee
                                 )
                                 return;
+                            }
+
+                            // An unqualified/imported namespace variable is
+                            // compiled as a normal global VariableValue. Route
+                            // assignments through its definition anyway so a
+                            // schema dictionary stays synchronized with the
+                            // statically named variable.
+                            let realAssignee = assigneeExpr.getRealExpression();
+                            if (
+                                realAssignee instanceof AtomicExpression
+                                && (realAssignee.token.type == TokenType.IDENTIFIER || realAssignee.token.type == TokenType.NAMESPACE)
+                            ) {
+                                let definition = this.env.types.resolveIdentifier(realAssignee.token);
+                                if (isNamespaceVariableDefinition(definition)) {
+                                    code.push(...definition.compileSet(val, this.getEvaluationContext(context.perSelectedMode)));
+                                    return;
+                                }
                             }
                             
                             code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
@@ -1902,8 +2161,193 @@ export class CodeCompiler {
         })]);
     }
 
+    /** Source namespace declarations flatten to ordinary mangled functions/processes. */
+    private getCompilableTopLevelStatements(): Statement[] {
+        let flattened: Statement[] = [];
+        const visit = (statement: Statement, insideNamespace: boolean = false) => {
+            if (statement instanceof NamespaceStatement) {
+                if (statement.chunk instanceof ChunkExpression) {
+                    for (const member of statement.chunk.statements) visit(member, true);
+                }
+                return;
+            }
+            if (insideNamespace) {
+                if (statement instanceof FunctionStatement && this.env.types.sourceNamespaceFunctionStatements.has(statement)) {
+                    flattened.push(statement);
+                }
+                return;
+            }
+            if (
+                statement instanceof ImportStatement
+                || statement instanceof NamespaceVariableStatement
+                || statement instanceof NamespaceSchemaStatement
+            ) {
+                return;
+            }
+            flattened.push(statement);
+        }
+        for (const statement of this.ast) visit(statement);
+        return flattened;
+    }
+
+    /** Emits namespace variable initializers after runtime dictionaries are ready. */
+    private compileSourceNamespaceInitializers() {
+        let initializerCode: CodeBlock[] = [];
+        for (const definition of this.env.types.sourceNamespaceVariables) {
+            if (definition.initializer == null) continue;
+            let [value, valueCode] = this.compileExpression(definition.initializer, {});
+            initializerCode.push(...valueCode);
+            if (!(value instanceof TangibleValue)) {
+                this.reportError(
+                    definition.initializer,
+                    `${value.constructor.name} cannot initialize namespace variable '${definition.namespace.fullPath}.${definition.name}'`,
+                    value,
+                );
+                continue;
+            }
+            // Use the definition setter rather than a raw assignment so a
+            // schema dictionary created earlier in PlotStartup immediately
+            // receives the initialized value as well.
+            initializerCode.push(...definition.compileSet(value, this.getEvaluationContext()));
+        }
+        if (initializerCode.length > 0) {
+            this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(initializerCode);
+        }
+    }
+
+    private getSourceNamespaceDiagnosticNode(namespace: SourceNamespace, member?: string): ASTNode | null {
+        return (
+            (member ? namespace.memberDeclarationNodes.get(member) : undefined)
+            ?? namespace.declarations[0]
+            ?? namespace.parentSourceNamespace?.memberDeclarationNodes.get(namespace.identifier)
+            ?? namespace.parentSourceNamespace?.declarations[0]
+            ?? null
+        );
+    }
+
+    /** Returns the immediate runtime members for one schema-backed namespace. */
+    private getSourceNamespaceDictionaryMembers(namespace: SourceNamespace): [string, TangibleValue][] {
+        let members: [string, TangibleValue][] = [];
+        let ctx = this.getEvaluationContext();
+        let report = (name: string, message: string) => {
+            let node = this.getSourceNamespaceDiagnosticNode(namespace, name);
+            if (node != null) this.reportError(node, message);
+        };
+        let addValue = (name: string, definition: unknown) => {
+            if (!isSourceNamespaceVariableDefinition(definition)) {
+                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' is not a value`);
+                return;
+            }
+            let [value, code] = definition.compile(ctx);
+            if (code.length > 0) {
+                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' cannot require generated code`);
+                return;
+            }
+            members.push([name, value]);
+        };
+        let addFunction = (name: string, definition: unknown) => {
+            if (!isFunctionDefinition(definition)) {
+                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' is not a function`);
+                return;
+            }
+            members.push([
+                name,
+                new StringValue(definition.name, definition.astNode),
+            ]);
+        };
+        let addChild = (name: string, child: SourceNamespace | undefined) => {
+            if (child == undefined) {
+                report(name, `Namespace dictionary member '${namespace.fullPath}.${name}' is missing its nested namespace`);
+                return;
+            }
+            let value = this.env.types.getSourceNamespaceRuntimeValue(child);
+            if (!(value instanceof TangibleValue)) {
+                report(name, `Nested namespace '${child.fullPath}' has no runtime dictionary`);
+                return;
+            }
+            members.push([name, value]);
+        };
+
+        // A conforming namespace stores its shape's declared fields. Its own
+        // schema, when present, instead describes a container of child
+        // namespaces and is handled below.
+        if (namespace.effectiveSchema?.kind == "shape") {
+            for (const field of namespace.effectiveSchema.fields.values()) {
+                let definition = namespace.members[field.name];
+                if (definition == undefined) continue; // optional field omitted
+                if (field.kind == "value") addValue(field.name, definition);
+                else if (field.kind == "function") addFunction(field.name, definition);
+                else addChild(field.name, namespace.children.get(field.name));
+            }
+            return members;
+        }
+
+        let schema = namespace.schema;
+        if (schema == null) return members;
+        if (schema.kind == "value") {
+            for (const [name, definition] of Object.entries(namespace.members)) {
+                addValue(name, definition);
+            }
+            return members;
+        }
+        if (schema.kind == "function") {
+            for (const [name, definition] of Object.entries(namespace.members)) {
+                addFunction(name, definition);
+            }
+            return members;
+        }
+        for (const [name, child] of namespace.children) {
+            addChild(name, child);
+        }
+        return members;
+    }
+
+    /**
+     * Each schema namespace gets an immediate-member dictionary. Children are
+     * initialized first, so parent entries can point at already-created child
+     * dictionaries rather than constructing a recursive monolith.
+     */
+    private compileSourceNamespaceDictionaries() {
+        let dictionaryCode: CodeBlock[] = [];
+        let namespaces = [...this.env.types.sourceNamespaces]
+            .filter(namespace => namespace.runtimeBacked)
+            .sort((a, b) => b.path.length - a.path.length);
+
+        for (const namespace of namespaces) {
+            let entries = this.getSourceNamespaceDictionaryMembers(namespace);
+            if (entries.length > DICT_LENGTH_LIMIT) {
+                let node = this.getSourceNamespaceDiagnosticNode(namespace);
+                if (node != null) this.reportError(
+                    node,
+                    `Namespace '${namespace.fullPath}' has ${entries.length} runtime members, exceeding DiamondFire's dictionary limit of ${DICT_LENGTH_LIMIT}`,
+                );
+            }
+            let dictionary = this.env.types.getSourceNamespaceRuntimeValue(namespace);
+            if (!(dictionary instanceof VariableValue)) {
+                let node = this.getSourceNamespaceDiagnosticNode(namespace);
+                if (node != null) this.reportError(node, `Namespace '${namespace.fullPath}' has no writable runtime dictionary`);
+                continue;
+            }
+            let keys = this.tempVarProvider.newTempVar(Type.list(Type.str));
+            let values = this.tempVarProvider.newTempVar(Type.list(Type.any));
+            dictionaryCode.push(
+                ...this.compileListContents(keys, entries.map(([name]) => new StringValue(name))),
+                ...this.compileListContents(values, entries.map(([, value]) => value)),
+                new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                    action: "CreateDict",
+                    args: [dictionary, keys, values],
+                }),
+            );
+        }
+        if (dictionaryCode.length > 0) {
+            this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(dictionaryCode);
+        }
+    }
+
     compile({outputFormat, splitToLength = -1}: {outputFormat: "GZIP" | "DFONLINE", splitToLength?: number}) {
-        let declarationsToCompile = this.processLineDeclarations(this.ast);
+        let declarationsToCompile = this.processLineDeclarations(this.getCompilableTopLevelStatements());
+        this.compileSourceNamespaceDictionaries();
+        this.compileSourceNamespaceInitializers();
 
         for (const [lineEntry, declaration] of declarationsToCompile) {
             this.tempVarProvider.resetCount();

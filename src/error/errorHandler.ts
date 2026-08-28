@@ -51,8 +51,10 @@ function getLineFromIndex(index: number, script: string) {
 
 export function printError(e: TCError, fileName: string) {
     process.stderr.write("   \n")
+    let severity = e.isWarning ? "Warning" : "Error";
+    let severityColor = e.isWarning ? COLOR.Yellow : COLOR.Red;
     if (e instanceof TCStandaloneError) {
-        process.stderr.write(`${COLOR.Reset}Error: ${COLOR.Red}${e.message}${COLOR.Reset}\n`)
+        process.stderr.write(`${COLOR.Reset}${severity}: ${severityColor}${e.message}${COLOR.Reset}\n`)
         return;
     }
 
@@ -130,5 +132,5 @@ export function printError(e: TCError, fileName: string) {
 
         // process.stderr.write(`${" ".repeat(leftSpace)}${COLOR.Red}${e.message}${COLOR.Reset}\n`)
     }
-    process.stderr.write(`${COLOR.Reset}Error in ${COLOR.White}${fileName}${COLOR.Reset} at line ${COLOR.White}${getLineFromIndex(startPos, script) + 1}${COLOR.Reset}: ${COLOR.Red}${e.message}${COLOR.Reset}\n`)
+    process.stderr.write(`${COLOR.Reset}${severity} in ${COLOR.White}${fileName}${COLOR.Reset} at line ${COLOR.White}${getLineFromIndex(startPos, script) + 1}${COLOR.Reset}: ${severityColor}${e.message}${COLOR.Reset}\n`)
 }

@@ -1,21 +1,27 @@
 import { ASTNode, RootNode } from "../ast/astNode.ts";
-import { AccessExpression, AtomicExpression, BinaryExpression, BracketedAccessExpression, CallExpression, ChunkExpression, DictionaryEntryExpression, DictionaryExpression, DictionaryTypeExpression, Expression, GroupExpression, ListExpression, SelectionExpression, TypecastExpression, TypeExpression, UnaryPrefixExpression, VariableExpression } from "../ast/expression.ts";
-import { AssignmentStatement, ExpressionStatement, ForStatement, FunctionStatement, RepeatStatement, PerSelectedStatement, Statement, IfStatement, WhileStatement, DeclareStatement, TypeStatement, ExtendStatement } from "../ast/statement.ts";
+import { AccessExpression, AtomicExpression, BinaryExpression, BracketedAccessExpression, CallExpression, CallOrStartExpression, ChunkExpression, DictionaryEntryExpression, DictionaryExpression, DictionaryTypeExpression, Expression, GroupExpression, ListExpression, ParameterExpression, SelectionExpression, TypecastExpression, TypeExpression, UnaryPrefixExpression, VariableExpression } from "../ast/expression.ts";
+import { AssignmentStatement, ExpressionStatement, ForStatement, FunctionSchemaTypeExpression, FunctionStatement, NamespaceSchemaFieldStatement, NamespaceSchemaFunctionStatement, NamespaceSchemaReferenceExpression, NamespaceSchemaStatement, NamespaceShapeSchemaExpression, NamespaceStatement, NamespaceVariableStatement, RepeatStatement, PerSelectedStatement, Statement, IfStatement, WhileStatement, DeclareStatement, TypeStatement, ExtendStatement, ImportStatement } from "../ast/statement.ts";
 import { Token, TokenType } from "../ast/token.ts";
 import { ErrorType, TCError, TCNodeError } from "../error/error.ts";
 import { Operations } from "../compiler/operations.ts";
-import { CUSTOM_TYPES, DictTypeData, FuncTypeData, ListTypeData, MultiValueTypeData, NamespaceTypeData, Type, TypeConstructor, TYPE_NAMESPACES, VarTypeData } from "./type.ts";
+import { CUSTOM_TYPES, DictTypeData, FuncTypeData, getWidestType, ListTypeData, MultiValueTypeData, NamespaceTypeData, Type, TypeConstructor, TYPE_NAMESPACES, VarTypeData } from "./type.ts";
 import { Namespace } from "../compiler/namespace/namespace.ts";
 import { getTagsAndArgTypes, ps, tcParseNumber } from "../util/utils.ts";
 import { FILTER_ACTIONS, REPEAT_ACTIONS, SELECT_ACTIONS } from "../compiler/namespace/builtins.ts";
 import { isForLoopActionCall } from "../util/astUtils.ts";
-import { Definition, DefinitionType, FunctionDefinition, isFunctionDefinition, ParameterSignature, ParameterSignatureEntry, USE_DEFAULT_RETURN_TYPE } from "../compiler/namespace/definition.ts";
+import { Definition, DefinitionType, FunctionDefinition, isFunctionDefinition, isNamespaceVariableDefinition, isPropertyDefinition, isValueDefinition, NamespaceVariableDefinition, ParameterSignature, ParameterSignatureEntry, PropertyDefinition, USE_DEFAULT_RETURN_TYPE, ValueDefinition } from "../compiler/namespace/definition.ts";
 import { GLOBAL_SCOPE_INJECTIONS } from "../compiler/namespace/globalScopeInjections.ts";
 import { COMPILE_START_PROCESS, COMPILE_CALL_FUNCTION } from "../compiler/namespace/compileCallFunction.ts";
 import { DFCodeblockName } from "../df/constants.ts";
 import { BooleanOperation } from "../compiler/booleanOperation.ts";
 import { actions } from "../df/actiondump.ts";
 import { commentsToDocumentation } from "../ast/documenter.ts";
+import { getSourceNamespaceMemberBackendName, isSourceNamespaceVariableDefinition, SourceNamespace, SourceNamespaceFunctionSchema, SourceNamespaceNestedShapeField, SourceNamespaceSchema, SourceNamespaceShapeField, SourceNamespaceShapeSchema, SourceNamespaceValueSchema, SourceNamespaceVariableDefinition } from "../compiler/namespace/sourceNamespace.ts";
+import { ActionBlock, CodeBlock } from "../compiler/codeBlock.ts";
+import { CodeValue, EmptyValue, NamespaceValue, StringValue, TangibleValue, VariableValue } from "../compiler/codeValue.ts";
+import { validateArguments } from "../util/argValidation.ts";
+import { handleSingleBlockReturnVars } from "../compiler/namespace/builtins.ts";
+import "../compiler/namespace/namespaceReflection.ts";
 
 export function getExtensionFunctionBackendName(typeName: string, functionName: string): string {
     let clean = (value: string) => value.replace(/[^A-Za-z0-9_]/g, "_");
@@ -72,6 +78,9 @@ export class EnvironmentFrame {
     functions: Map<string, FunctionDefinition[]> = new Map();
     /** Currently, only the global frame will have this filled out */
     processes: Map<string, FunctionDefinition[]> = new Map();
+
+    /** Import bindings are stored on the root-document frame and inherit normally. */
+    imports: Map<string, Namespace | Definition> = new Map();
 
     children: Map<RootNode | ChunkExpression, EnvironmentFrame> = new Map();
 
@@ -211,6 +220,16 @@ export class EnvironmentFrame {
         return entry.type ?? Type.unknown;
     }
 
+    getImport(name: string): Namespace | Definition | null {
+        let frame: EnvironmentFrame | null = this;
+        while (frame != null) {
+            let imported = frame.imports.get(name);
+            if (imported != undefined) return imported;
+            frame = frame.parent;
+        }
+        return null;
+    }
+
     /** Will return the entry list for every scope,name combination that exists WITHIN THIS FRAME!! 
      * 
      * This will NOT look in child or parent frames.
@@ -293,6 +312,18 @@ export class TypeProcessor {
 
     expressionTypeCache: Map<Expression, Map<EnvironmentFrame, Type>> = new Map();
 
+    /** Source namespaces are intentionally separate from globally available built-in namespaces. */
+    sourceNamespaceRoots = new Map<string, SourceNamespace>();
+    sourceNamespaces = new Set<SourceNamespace>();
+    sourceNamespaceByDeclaration = new Map<NamespaceStatement, SourceNamespace>();
+    sourceNamespaceByNode = new Map<ASTNode, SourceNamespace>();
+    sourceNamespaceFunctionStatements = new Set<FunctionStatement>();
+    sourceNamespaceVariables: SourceNamespaceVariableDefinition[] = [];
+    private sourceNamespaceSchemasValidated = false;
+    /** Schema-dependent initializer types are finalized after runtime shapes exist. */
+    private deferSourceNamespaceVariableTypeValidation = false;
+    private sourceNamespaceImportRoots: RootNode[] = [];
+
     constructor() {
         for (const name of Object.keys(CUSTOM_TYPES)) {
             delete CUSTOM_TYPES[name];
@@ -310,6 +341,12 @@ export class TypeProcessor {
         ));
     }
 
+    reportWarning(node: ASTNode, warning: string) {
+        let diagnostic = new TCNodeError(node, ErrorType.TYPE_PROCESSOR, warning);
+        diagnostic.isWarning = true;
+        this.errors.push(diagnostic);
+    }
+
     genericizeType(type: Type): Type {
         if (type.matches(Type.dict)) {
             return Type.dict(Type.any);
@@ -319,12 +356,1018 @@ export class TypeProcessor {
         return type;
     }
 
+    private ensureSourceNamespace(path: readonly string[]): SourceNamespace {
+        let current: SourceNamespace | null = null;
+        for (let i = 0; i < path.length; i++) {
+            let segment = path[i];
+            let child = current == null
+                ? this.sourceNamespaceRoots.get(segment)
+                : current.children.get(segment);
+            if (child == undefined) {
+                child = new SourceNamespace(path.slice(0, i + 1), current);
+                this.sourceNamespaces.add(child);
+                if (current == null) {
+                    this.sourceNamespaceRoots.set(segment, child);
+                } else {
+                    current.children.set(segment, child);
+                }
+            }
+            current = child;
+        }
+        return current!;
+    }
+
+    private mapSourceNamespaceContext(node: ASTNode, namespace: SourceNamespace) {
+        this.sourceNamespaceByNode.set(node, namespace);
+        for (const child of node.children) {
+            // The nested declaration owns its body, so do not give it the outer scope.
+            if (child instanceof NamespaceStatement) continue;
+            this.mapSourceNamespaceContext(child, namespace);
+        }
+    }
+
+    private collectSourceNamespaceDeclaration(statement: NamespaceStatement, parent: SourceNamespace | null) {
+        let path = [...(parent?.path ?? []), ...statement.path.map(segment => segment.value)];
+        let namespace = this.ensureSourceNamespace(path);
+        namespace.declarations.push(statement);
+        this.sourceNamespaceByDeclaration.set(statement, namespace);
+        this.sourceNamespaceByNode.set(statement, namespace);
+
+        if (namespace.path.length == 1 && (
+            namespace.identifier in Namespace.registry
+            || namespace.identifier in CUSTOM_TYPES
+            || namespace.identifier in Type
+        )) {
+            this.reportError(statement.path[0], `Namespace '${namespace.identifier}' conflicts with an existing global namespace or type`);
+        }
+
+        if (!(statement.chunk instanceof ChunkExpression)) return;
+        this.sourceNamespaceByNode.set(statement.chunk, namespace);
+        for (const member of statement.chunk.statements) {
+            if (member instanceof NamespaceStatement) {
+                this.collectSourceNamespaceDeclaration(member, namespace);
+            } else {
+                this.mapSourceNamespaceContext(member, namespace);
+            }
+        }
+    }
+
+    private createSourceNamespaceVariableDefinitionFromParts(
+        namespace: SourceNamespace,
+        name: string,
+        returnType: Type,
+        declaration: NamespaceVariableStatement | null,
+        initializer: Expression | null,
+        explicitlyTyped: boolean,
+        astNode: ASTNode,
+        generated: boolean = false,
+    ): SourceNamespaceVariableDefinition {
+        let definition: SourceNamespaceVariableDefinition = {
+            definitionType: DefinitionType.NAMESPACE_VARIABLE,
+            name,
+            returnType,
+            namespace,
+            declaration,
+            initializer,
+            explicitlyTyped,
+            generated,
+            astNode,
+            compile: (ctx) => [
+                new VariableValue(
+                    getSourceNamespaceMemberBackendName(namespace.path, name),
+                    VariableScope.GLOBAL,
+                    definition.returnType,
+                    astNode,
+                ),
+                [],
+            ],
+            compileSet: (newValue, ctx) => {
+                let target = new VariableValue(
+                    getSourceNamespaceMemberBackendName(namespace.path, name),
+                    VariableScope.GLOBAL,
+                    definition.returnType,
+                    astNode,
+                );
+                let code: CodeBlock[] = [new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                    action: "=",
+                    args: [target, newValue],
+                })];
+                // Schema dictionaries contain immediate values rather than a
+                // flattened tree. Mirror the changed value, then refresh every
+                // runtime parent entry on the path to the root so dynamic
+                // chained reads observe the latest nested dictionary too.
+                let current: SourceNamespace | null = namespace;
+                let child: SourceNamespace | null = null;
+                while (current != null) {
+                    let dictionary = this.getSourceNamespaceRuntimeValue(current);
+                    if (dictionary instanceof TangibleValue) {
+                        let key = child == null ? name : child.identifier;
+                        let value = child == null ? newValue : this.getSourceNamespaceRuntimeValue(child);
+                        if (value instanceof TangibleValue) {
+                            code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                                action: "SetDictValue",
+                                args: [dictionary, new StringValue(key, astNode), value],
+                            }));
+                        }
+                    }
+                    child = current;
+                    current = current.parentSourceNamespace;
+                }
+                return code;
+            },
+        };
+        return definition;
+    }
+
+    private createSourceNamespaceVariableDefinition(namespace: SourceNamespace, statement: NamespaceVariableStatement): SourceNamespaceVariableDefinition {
+        return this.createSourceNamespaceVariableDefinitionFromParts(
+            namespace,
+            statement.name.value,
+            statement.assignedType
+                ? this.evaluateExplicitType(statement.assignedType.type, {reportErrors: true})
+                : Type.unknown,
+            statement,
+            statement.initialValue,
+            statement.assignedType != null,
+            statement,
+        );
+    }
+
+    private createGeneratedSourceNamespaceVariable(
+        namespace: SourceNamespace,
+        name: string,
+        type: Type,
+        initializer: Expression | null,
+        source: ASTNode,
+    ): SourceNamespaceVariableDefinition {
+        return this.createSourceNamespaceVariableDefinitionFromParts(
+            namespace,
+            name,
+            type,
+            null,
+            initializer,
+            true,
+            source,
+            true,
+        );
+    }
+
+    private createSourceNamespaceLinkDefinition(namespace: SourceNamespace): ValueDefinition {
+        return {
+            definitionType: DefinitionType.VALUE,
+            returnType: Type.namespace(namespace),
+            compile: (ctx) => [this.getSourceNamespaceRuntimeValue(namespace), []],
+        };
+    }
+
+    getSourceNamespaceRuntimeValue(namespace: SourceNamespace, astNode?: ASTNode): CodeValue {
+        if (namespace.runtimeBacked) {
+            return new VariableValue(
+                namespace.dictionaryBackendName,
+                VariableScope.GLOBAL,
+                Type.namespace(namespace),
+                astNode,
+            );
+        }
+        return new NamespaceValue(namespace, astNode);
+    }
+
+    private registerSourceNamespaceMember(namespace: SourceNamespace, name: string, definition: Definition, node: ASTNode): boolean {
+        let existing = namespace.members[name];
+        if (existing != undefined) {
+            this.reportError(node, `Namespace member '${namespace.fullPath}.${name}' is declared in multiple places`);
+            let existingNode = namespace.memberDeclarationNodes.get(name);
+            if (existingNode) this.reportError(existingNode, `Namespace member '${namespace.fullPath}.${name}' is declared in multiple places`);
+            return false;
+        }
+        if (namespace.children.has(name)) {
+            this.reportError(node, `Namespace member '${namespace.fullPath}.${name}' conflicts with a nested namespace of the same name`);
+            return false;
+        }
+        namespace.members[name] = definition;
+        namespace.memberDeclarationNodes.set(name, node);
+        return true;
+    }
+
+    private registerSourceNamespaceMembers() {
+        for (const namespace of this.sourceNamespaces) {
+            for (const declaration of namespace.declarations) {
+                if (!(declaration.chunk instanceof ChunkExpression)) continue;
+                for (const member of declaration.chunk.statements) {
+                    if (member instanceof NamespaceStatement) continue;
+                    if (member instanceof NamespaceSchemaStatement) {
+                        namespace.schemaDeclarations.push(member);
+                        continue;
+                    }
+                    if (member instanceof NamespaceVariableStatement) {
+                        let definition = this.createSourceNamespaceVariableDefinition(namespace, member);
+                        if (this.registerSourceNamespaceMember(namespace, member.name.value, definition, member.name)) {
+                            this.sourceNamespaceVariables.push(definition);
+                        }
+                        continue;
+                    }
+                    if (member instanceof FunctionStatement) {
+                        member.backendName = getSourceNamespaceMemberBackendName(namespace.path, member.name.value);
+                        let definition = this.createFunctionDefinition(member, this.globalFrame, member.backendName, {registerParameters: false});
+                        if (definition && this.registerSourceNamespaceMember(namespace, member.name.value, definition, member.name)) {
+                            this.sourceNamespaceFunctionStatements.add(member);
+                        }
+                        continue;
+                    }
+                    this.reportError(member, "Only namespace declarations, variables, functions, processes, and schemas are allowed inside a namespace");
+                }
+            }
+        }
+
+        // Expose child namespaces as regular value definitions after all direct
+        // members have been collected, so collisions are diagnosed independent of
+        // declaration order and file order.
+        for (const namespace of this.sourceNamespaces) {
+            for (const [name, child] of namespace.children) {
+                if (namespace.members[name] != undefined) continue;
+                namespace.members[name] = this.createSourceNamespaceLinkDefinition(child);
+                let declaration = child.declarations[0];
+                let segment = declaration?.path[declaration.path.length - 1] ?? declaration?.keyword;
+                if (segment) namespace.memberDeclarationNodes.set(name, segment);
+            }
+        }
+    }
+
+    private findSourceNamespace(path: readonly string[]): SourceNamespace | null {
+        let current = this.sourceNamespaceRoots.get(path[0]);
+        if (current == undefined) return null;
+        for (let i = 1; i < path.length; i++) {
+            current = current.children.get(path[i]);
+            if (current == undefined) return null;
+        }
+        return current;
+    }
+
+    private resolveSourceImports(
+        roots: RootNode[],
+        reportUnknown: boolean = true,
+        tolerateExistingSameTarget: boolean = false,
+    ) {
+        for (const root of roots) {
+            let frame = this.framesByASTNode.get(root);
+            if (!frame) continue;
+            for (const statement of root.statements) {
+                if (!(statement instanceof ImportStatement)) continue;
+                let path = statement.path.map(segment => segment.value);
+                let target: Namespace | Definition | null = this.findSourceNamespace(path);
+                if (target == null && path.length > 1) {
+                    let namespace = this.findSourceNamespace(path.slice(0, -1));
+                    target = namespace?.members[path[path.length - 1]] ?? null;
+                }
+                if (target == null) {
+                    if (reportUnknown) {
+                        this.reportError(statement.path[0] ?? statement.keyword, `Cannot import unknown namespace or member '${path.join(".")}'`);
+                    }
+                    continue;
+                }
+                let binding = statement.alias?.value ?? path[path.length - 1];
+                let previous = frame.imports.get(binding);
+                if (previous != undefined) {
+                    if (tolerateExistingSameTarget && previous == target) continue;
+                    this.reportError(statement.alias ?? statement.path[statement.path.length - 1], `Import '${binding}' conflicts with another import in this file`);
+                    continue;
+                }
+                frame.imports.set(binding, target);
+            }
+        }
+    }
+
+    private validateSourceNamespaceShadowing() {
+        for (const namespace of this.sourceNamespaces) {
+            for (const [name] of Object.entries(namespace.members)) {
+                let ancestor = namespace.parentSourceNamespace;
+                while (ancestor != null && ancestor.members[name] == undefined) {
+                    ancestor = ancestor.parentSourceNamespace;
+                }
+                if (ancestor == null) continue;
+                let node = namespace.memberDeclarationNodes.get(name);
+                let ancestorNode = ancestor.memberDeclarationNodes.get(name);
+                if (node) {
+                    this.reportWarning(
+                        node,
+                        `Namespace member '${namespace.fullPath}.${name}' shadows ancestor member '${ancestor.fullPath}.${name}'. Unqualified lookups use the nearer member.`,
+                    );
+                }
+                if (ancestorNode) {
+                    this.reportWarning(
+                        ancestorNode,
+                        `Ancestor member '${ancestor.fullPath}.${name}' is shadowed by '${namespace.fullPath}.${name}'.`,
+                    );
+                }
+            }
+        }
+    }
+
+    private prepareSourceNamespaces(roots: RootNode[]) {
+        for (const root of roots) {
+            for (const statement of root.statements) {
+                if (statement instanceof NamespaceStatement) {
+                    this.collectSourceNamespaceDeclaration(statement, null);
+                }
+            }
+        }
+        this.registerSourceNamespaceMembers();
+        this.sourceNamespaceImportRoots = roots;
+        // Bind imports that already exist so ordinary source expressions can be
+        // typed before defaults are materialized. Imports of generated default
+        // members are retried after schema validation.
+        this.resolveSourceImports(roots, false);
+        this.validateSourceNamespaceShadowing();
+    }
+
+    private createNamespaceSchemaSignature(
+        params: ListExpression<ParameterExpression> | null,
+    ): ParameterSignatureEntry[] {
+        let entries: ParameterSignatureEntry[] = [];
+        let seenNames = new Set<string>();
+        for (const param of params?.elements ?? []) {
+            if (seenNames.has(param.name.value)) {
+                this.reportError(param.name, `Duplicate schema parameter '${param.name.value}'`);
+                continue;
+            }
+            seenNames.add(param.name.value);
+            let type = param.assignedType
+                ? this.evaluateExplicitType(param.assignedType.type, {reportErrors: true, allowVarType: true})
+                : Type.any;
+            if (param.ellipses && type.matches(Type.var)) {
+                this.reportError(param, "Schema parameters of type 'var' cannot be plural");
+            }
+            if (param.optionalMarker && param.ellipses) {
+                this.reportError(param, "Plural schema parameters cannot be optional");
+            }
+            entries.push({
+                name: param.name.value,
+                type,
+                optional: param.optionalMarker != null || (!param.ellipses && param.defaultValue != null),
+                plural: param.ellipses != null,
+                description: commentsToDocumentation(param.attachedComments),
+            });
+        }
+        return entries;
+    }
+
+    private createRuntimeNamespaceFunctionDefinition(
+        name: string,
+        params: ListExpression<ParameterExpression> | null,
+        returnTypeExpression: TypeExpression,
+        declaration: ASTNode,
+        callKind: "function" | "process" | "either" = "function",
+    ): FunctionDefinition {
+        let returnType = this.evaluateExplicitType(returnTypeExpression, {reportErrors: true});
+        if (callKind == "process" && !returnType.matches(Type.void)) {
+            this.reportError(returnTypeExpression, "Process schema members must return 'void'");
+            returnType = Type.void;
+        }
+        let definition: FunctionDefinition;
+        definition = {
+            definitionType: DefinitionType.FUNCTION,
+            name,
+            signatures: [{params: this.createNamespaceSchemaSignature(params)}],
+            defaultReturnType: returnType,
+            getReturnType: USE_DEFAULT_RETURN_TYPE,
+            runtimeNamespaceFunction: true,
+            runtimeNamespaceCallKind: callKind,
+            action: actions.get(DFCodeblockName.CALL_FUNCTION)?.dynamic,
+            compile: (args, namedArgs, ctx, callNode, extraInfo = {}) => {
+                let access = extraInfo.runtimeNamespaceAccess;
+                if (access == null) {
+                    ctx.reportError(callNode, "This schema function must be accessed through a schema-backed namespace");
+                    return [new EmptyValue(callNode), []];
+                }
+                validateArguments(args, callNode, definition.signatures, ctx);
+                let functionName = ctx.tvp.newTempVar(Type.str);
+                let finalArgs = args.filter(arg => arg instanceof TangibleValue);
+                let lookup = new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                    action: "GetDictValue",
+                    args: [functionName, access.dictionary, access.key],
+                });
+                let startsProcess = callNode instanceof CallOrStartExpression
+                    && callNode.keyword.type == TokenType.START;
+                let requestedKind = startsProcess ? "process" : "function";
+                if (definition.runtimeNamespaceCallKind != "either"
+                    && definition.runtimeNamespaceCallKind != requestedKind) {
+                    ctx.reportError(
+                        callNode,
+                        requestedKind == "process"
+                            ? "This namespace member is a function; call it without 'start'"
+                            : "This namespace member is a process; invoke it with 'start'",
+                    );
+                    return [new EmptyValue(callNode), []];
+                }
+                if (startsProcess && !definition.defaultReturnType.matches(Type.void)) {
+                    ctx.reportError(
+                        callNode,
+                        "A namespace process must use a schema that returns 'void'",
+                    );
+                    return [new EmptyValue(callNode), []];
+                }
+                if (startsProcess) {
+                    return [new EmptyValue(callNode), [
+                        lookup,
+                        new ActionBlock(DFCodeblockName.START_PROCESS, {
+                            action: `%var(${functionName.name})`,
+                            args: finalArgs,
+                        }),
+                    ]];
+                }
+                let [returnValue] = handleSingleBlockReturnVars(
+                    definition,
+                    ctx,
+                    extraInfo,
+                    callNode,
+                    finalArgs,
+                );
+                return [returnValue, [
+                    lookup,
+                    new ActionBlock(DFCodeblockName.CALL_FUNCTION, {
+                        action: `%var(${functionName.name})`,
+                        args: finalArgs,
+                    }),
+                ]];
+            },
+        };
+        return definition;
+    }
+
+    private createSchemaDictionaryProperty(
+        name: string,
+        type: Type,
+        declaration: ASTNode,
+    ): PropertyDefinition {
+        return {
+            definitionType: DefinitionType.PROPERTY,
+            type,
+            compileGet: (ctx, propertyOf) => {
+                if (!(propertyOf instanceof TangibleValue)) {
+                    ctx.reportError(declaration, `Schema member '${name}' needs a runtime namespace value`);
+                    return [new EmptyValue(declaration), []];
+                }
+                let output = ctx.tvp.newTempVar(type);
+                return [output, [new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                    action: "GetDictValue",
+                    args: [output, propertyOf, new StringValue(name, declaration)],
+                })]];
+            },
+            compileSet: (newValue, ctx, propertyOf) => {
+                if (!(propertyOf instanceof TangibleValue)) {
+                    ctx.reportError(declaration, `Schema member '${name}' needs a runtime namespace value`);
+                    return [];
+                }
+                return [new ActionBlock(DFCodeblockName.SET_VARIABLE, {
+                    action: "SetDictValue",
+                    args: [propertyOf, new StringValue(name, declaration), newValue],
+                })];
+            },
+        };
+    }
+
+    private getSchemaFieldRuntimeType(field: SourceNamespaceShapeField): Type {
+        if (field.kind == "value") return field.type;
+        if (field.kind == "function") return Type.func(field.definition);
+        let shape = field.shape ?? (
+            field.target?.schema?.kind == "shape" ? field.target.schema : null
+        );
+        return shape ? Type.namespace(shape.prototype) : Type.unknown;
+    }
+
+    private buildSourceNamespaceShapeSchema(
+        owner: SourceNamespace,
+        expression: NamespaceShapeSchemaExpression,
+        declaration: NamespaceSchemaStatement | NamespaceSchemaFieldStatement,
+    ): SourceNamespaceShapeSchema {
+        let prototype = new SourceNamespace([...owner.path, `$schema${expression.startPos}`], null);
+        let schema: SourceNamespaceShapeSchema = {
+            kind: "shape",
+            fields: new Map(),
+            prototype,
+            declaration,
+        };
+
+        for (const member of expression.members) {
+            let name = member.name.value;
+            if (schema.fields.has(name)) {
+                this.reportError(member.name, `Schema member '${name}' is declared more than once`);
+                continue;
+            }
+
+            if (member instanceof NamespaceSchemaFunctionStatement) {
+                let callKind: "function" | "process" = member.keyword.type == TokenType.PROCESS ? "process" : "function";
+                let definition = this.createRuntimeNamespaceFunctionDefinition(
+                    `${owner.fullPath}.$schema.${name}`,
+                    member.params,
+                    member.returnType,
+                    member,
+                    callKind,
+                );
+                let field: SourceNamespaceShapeField = {
+                    kind: "function",
+                    name,
+                    optional: false,
+                    defaultValue: null,
+                    declaration: member,
+                    definition,
+                    processOnly: callKind == "process",
+                };
+                schema.fields.set(name, field);
+                prototype.members[name] = definition;
+                continue;
+            }
+
+            let fieldDeclaration = member as NamespaceSchemaFieldStatement;
+            let optional = fieldDeclaration.optionalMarker != null;
+            let defaultValue = fieldDeclaration.defaultValue;
+            if (fieldDeclaration.schemaType instanceof TypeExpression) {
+                let type = this.evaluateExplicitType(fieldDeclaration.schemaType, {reportErrors: true});
+                let field: SourceNamespaceShapeField = {
+                    kind: "value",
+                    name,
+                    optional,
+                    defaultValue,
+                    declaration: fieldDeclaration,
+                    type,
+                };
+                schema.fields.set(name, field);
+                prototype.members[name] = this.createSchemaDictionaryProperty(name, type, fieldDeclaration);
+                continue;
+            }
+            if (fieldDeclaration.schemaType instanceof FunctionSchemaTypeExpression) {
+                if (defaultValue != null) {
+                    this.reportError(defaultValue, "Function schema members cannot have default values");
+                }
+                let definition = this.createRuntimeNamespaceFunctionDefinition(
+                    `${owner.fullPath}.$schema.${name}`,
+                    fieldDeclaration.schemaType.params,
+                    fieldDeclaration.schemaType.returnType,
+                    fieldDeclaration,
+                );
+                let field: SourceNamespaceShapeField = {
+                    kind: "function",
+                    name,
+                    optional,
+                    defaultValue: null,
+                    declaration: fieldDeclaration,
+                    definition,
+                };
+                schema.fields.set(name, field);
+                prototype.members[name] = definition;
+                continue;
+            }
+
+            let target: SourceNamespace | null = null;
+            let targetPath: readonly string[] | null = null;
+            let shape: SourceNamespaceShapeSchema | null = null;
+            if (fieldDeclaration.schemaType instanceof NamespaceSchemaReferenceExpression) {
+                targetPath = fieldDeclaration.schemaType.path.map(token => token.value);
+                target = this.findSourceNamespace(targetPath);
+                if (target == null) {
+                    this.reportError(fieldDeclaration.schemaType, `Unknown namespace schema '${targetPath.join(".")}'`);
+                }
+            } else if (fieldDeclaration.schemaType instanceof NamespaceShapeSchemaExpression) {
+                shape = this.buildSourceNamespaceShapeSchema(owner, fieldDeclaration.schemaType, fieldDeclaration);
+            }
+            let field: SourceNamespaceNestedShapeField = {
+                kind: "namespace",
+                name,
+                optional,
+                defaultValue,
+                declaration: fieldDeclaration,
+                targetPath,
+                target,
+                shape,
+            };
+            schema.fields.set(name, field);
+            prototype.members[name] = this.createSchemaDictionaryProperty(
+                name,
+                this.getSchemaFieldRuntimeType(field),
+                fieldDeclaration,
+            );
+        }
+        return schema;
+    }
+
+    private buildSourceNamespaceSchema(namespace: SourceNamespace, declaration: NamespaceSchemaStatement): SourceNamespaceSchema | null {
+        let schemaType = declaration.schemaType;
+        if (schemaType instanceof TypeExpression) {
+            return {
+                kind: "value",
+                type: this.evaluateExplicitType(schemaType, {reportErrors: true}),
+                declaration,
+            };
+        }
+        if (schemaType instanceof FunctionSchemaTypeExpression) {
+            return {
+                kind: "function",
+                definition: this.createRuntimeNamespaceFunctionDefinition(
+                    `${namespace.fullPath}.$schema`,
+                    schemaType.params,
+                    schemaType.returnType,
+                    declaration,
+                    "either",
+                ),
+                declaration,
+                allowEitherKind: true,
+            };
+        }
+        if (schemaType instanceof NamespaceShapeSchemaExpression) {
+            return this.buildSourceNamespaceShapeSchema(namespace, schemaType, declaration);
+        }
+        this.reportError(schemaType, "A namespace schema must be a value type, function signature, or namespace shape");
+        return null;
+    }
+
+    private resolveSourceNamespaceShapeReferences(
+        shape: SourceNamespaceShapeSchema,
+        visited: Set<SourceNamespaceShapeSchema> = new Set(),
+    ) {
+        if (visited.has(shape)) return;
+        visited.add(shape);
+        for (const field of shape.fields.values()) {
+            if (field.kind != "namespace") continue;
+            if (field.target != null) {
+                let targetSchema = field.target.schema;
+                if (targetSchema == null) {
+                    this.reportError(field.declaration, `Namespace '${field.target.fullPath}' does not declare a schema`);
+                } else if (targetSchema.kind != "shape") {
+                    this.reportError(field.declaration, `Namespace '${field.target.fullPath}' must use a namespace-shape schema here`);
+                } else {
+                    field.shape = targetSchema;
+                }
+            }
+            if (field.shape != null) {
+                this.resolveSourceNamespaceShapeReferences(field.shape, visited);
+            }
+            let property = shape.prototype.members[field.name];
+            if (isPropertyDefinition(property)) {
+                property.type = this.getSchemaFieldRuntimeType(field);
+            }
+        }
+        this.configureShapeRuntime(shape.prototype, shape);
+    }
+
+    private createGeneratedSourceNamespaceChild(
+        parent: SourceNamespace,
+        name: string,
+        source: ASTNode,
+    ): SourceNamespace | null {
+        if (parent.members[name] != undefined || parent.children.has(name)) {
+            this.reportError(source, `Cannot generate default namespace member '${parent.fullPath}.${name}' because that name is already in use`);
+            return null;
+        }
+        let child = new SourceNamespace([...parent.path, name], parent);
+        parent.children.set(name, child);
+        parent.members[name] = this.createSourceNamespaceLinkDefinition(child);
+        parent.memberDeclarationNodes.set(name, source);
+        this.sourceNamespaces.add(child);
+        return child;
+    }
+
+    private getSchemaDefaultDictionaryEntries(
+        expression: Expression,
+        field: SourceNamespaceNestedShapeField,
+    ): Map<string, Expression> | null {
+        let real = expression.getRealExpression();
+        if (!(real instanceof DictionaryExpression)) {
+            this.reportError(expression, `Default for namespace member '${field.name}' must be a dictionary literal`);
+            return null;
+        }
+        let entries = new Map<string, Expression>();
+        for (const entry of real.entries) {
+            if (!(entry.key instanceof Token) || !(
+                entry.key.type == TokenType.IDENTIFIER || entry.key.type == TokenType.STRING_LITERAL
+            )) {
+                this.reportError(entry, "Namespace default dictionary keys must be identifiers or string literals");
+                continue;
+            }
+            if (entries.has(entry.key.value)) {
+                this.reportError(entry.key, `Namespace default member '${entry.key.value}' is specified more than once`);
+                continue;
+            }
+            entries.set(entry.key.value, entry.value);
+        }
+        return entries;
+    }
+
+    private materializeDefaultNamespaceShape(
+        namespace: SourceNamespace,
+        shape: SourceNamespaceShapeSchema,
+        entries: Map<string, Expression>,
+        source: ASTNode,
+    ) {
+        for (const [name, value] of entries) {
+            let field = shape.fields.get(name);
+            if (field == null) {
+                this.reportError(source, `Namespace default provides unknown member '${name}'`);
+                continue;
+            }
+            if (field.kind == "value") {
+                let definition = this.createGeneratedSourceNamespaceVariable(
+                    namespace,
+                    name,
+                    field.type,
+                    value,
+                    value,
+                );
+                namespace.members[name] = definition;
+                namespace.memberDeclarationNodes.set(name, value);
+                this.sourceNamespaceVariables.push(definition);
+                continue;
+            }
+            if (field.kind == "function") {
+                this.reportError(value, `Function schema member '${name}' cannot be supplied by a dictionary default`);
+                continue;
+            }
+            this.materializeDefaultNamespaceField(namespace, field, value);
+        }
+    }
+
+    private materializeDefaultNamespaceField(
+        namespace: SourceNamespace,
+        field: SourceNamespaceNestedShapeField,
+        value: Expression,
+    ) {
+        let shape = field.shape;
+        if (shape == null) {
+            this.reportError(field.declaration, `Cannot materialize default for '${field.name}' because its namespace schema is invalid`);
+            return;
+        }
+        let child = this.createGeneratedSourceNamespaceChild(namespace, field.name, value);
+        if (child == null) return;
+        child.effectiveSchema = shape;
+        let entries = this.getSchemaDefaultDictionaryEntries(value, field);
+        if (entries != null) this.materializeDefaultNamespaceShape(child, shape, entries, value);
+        this.validateNamespaceAgainstShape(child, shape);
+    }
+
+    private materializeMissingShapeField(
+        namespace: SourceNamespace,
+        field: SourceNamespaceShapeField,
+    ) {
+        if (field.defaultValue == null) return;
+        if (field.kind == "value") {
+            let definition = this.createGeneratedSourceNamespaceVariable(
+                namespace,
+                field.name,
+                field.type,
+                field.defaultValue,
+                field.defaultValue,
+            );
+            namespace.members[field.name] = definition;
+            namespace.memberDeclarationNodes.set(field.name, field.defaultValue);
+            this.sourceNamespaceVariables.push(definition);
+            return;
+        }
+        if (field.kind == "function") {
+            this.reportError(field.defaultValue, `Function schema member '${field.name}' cannot have a default value`);
+            return;
+        }
+        this.materializeDefaultNamespaceField(namespace, field, field.defaultValue);
+    }
+
+    private signaturesMatch(actual: FunctionDefinition, expected: FunctionDefinition): boolean {
+        if (!actual.defaultReturnType.strictlyMatches(expected.defaultReturnType)) return false;
+        return actual.signatures.some(actualSignature => expected.signatures.some(expectedSignature => {
+            if (actualSignature.params.length != expectedSignature.params.length) return false;
+            return actualSignature.params.every((parameter, index) => {
+                let expectedParameter = expectedSignature.params[index];
+                return (
+                    parameter.optional == expectedParameter.optional
+                    && parameter.plural == expectedParameter.plural
+                    && parameter.type.strictlyMatches(expectedParameter.type)
+                );
+            });
+        }));
+    }
+
+    private isProcessDefinition(definition: FunctionDefinition): boolean {
+        return (
+            definition.compile == COMPILE_START_PROCESS
+            || definition.astNode?.headerType == DFCodeblockName.PROCESS
+        );
+    }
+
+    private validateSchemaFunctionMember(
+        namespace: SourceNamespace,
+        name: string,
+        definition: Definition,
+        expected: SourceNamespaceFunctionSchema | Extract<SourceNamespaceShapeField, {kind: "function"}>,
+    ) {
+        let allowsEitherKind = "allowEitherKind" in expected && expected.allowEitherKind == true;
+        if (!isFunctionDefinition(definition)) {
+            this.reportError(namespace.memberDeclarationNodes.get(name) ?? expected.declaration, `Namespace member '${namespace.fullPath}.${name}' must be a ${allowsEitherKind ? "function or process" : expected.processOnly ? "process" : "function"}`);
+            return;
+        }
+        let expectsProcess = expected.processOnly == true;
+        if (!allowsEitherKind && this.isProcessDefinition(definition) != expectsProcess) {
+            this.reportError(
+                definition.astNode ?? expected.declaration,
+                `Namespace member '${namespace.fullPath}.${name}' must be declared as a ${expectsProcess ? "process" : "function"}`,
+            );
+            return;
+        }
+        if (!this.signaturesMatch(definition, expected.definition)) {
+            this.reportError(
+                definition.astNode ?? expected.declaration,
+                `Namespace member '${namespace.fullPath}.${name}' does not match its schema signature`,
+            );
+        }
+    }
+
+    private validateNamespaceAgainstShape(namespace: SourceNamespace, shape: SourceNamespaceShapeSchema) {
+        if (namespace.schema != null) {
+            this.reportError(
+                namespace.schema.declaration,
+                `Namespace '${namespace.fullPath}' cannot declare its own schema while conforming to a parent namespace shape`,
+            );
+        }
+        if (namespace.effectiveSchema != null && namespace.effectiveSchema != shape) {
+            this.reportError(shape.declaration, `Namespace '${namespace.fullPath}' is required to conform to incompatible namespace schemas`);
+            return;
+        }
+        namespace.effectiveSchema = shape;
+
+        for (const [name, definition] of Object.entries(namespace.members)) {
+            let field = shape.fields.get(name);
+            if (field == null) {
+                this.reportError(
+                    namespace.memberDeclarationNodes.get(name) ?? shape.declaration,
+                    `Namespace member '${namespace.fullPath}.${name}' is not declared by its schema`,
+                );
+                continue;
+            }
+            if (field.kind == "value") {
+                if (!isSourceNamespaceVariableDefinition(definition)) {
+                    this.reportError(namespace.memberDeclarationNodes.get(name) ?? field.declaration, `Namespace member '${namespace.fullPath}.${name}' must be a value of type '${field.type}'`);
+                } else if (
+                    !this.deferSourceNamespaceVariableTypeValidation
+                    && !definition.returnType.matches(Type.unknown)
+                    && !definition.returnType.isAssignableTo(field.type)
+                ) {
+                    this.reportError(definition.astNode ?? field.declaration, `Namespace member '${namespace.fullPath}.${name}' has type '${definition.returnType}', expected '${field.type}'`);
+                }
+                continue;
+            }
+            if (field.kind == "function") {
+                this.validateSchemaFunctionMember(namespace, name, definition, field);
+                continue;
+            }
+            let child = namespace.children.get(name);
+            if (child == null) {
+                this.reportError(namespace.memberDeclarationNodes.get(name) ?? field.declaration, `Namespace member '${namespace.fullPath}.${name}' must be a nested namespace`);
+            } else if (field.shape != null) {
+                this.validateNamespaceAgainstShape(child, field.shape);
+            }
+        }
+
+        for (const field of shape.fields.values()) {
+            if (namespace.members[field.name] != undefined) continue;
+            if (field.defaultValue != null) {
+                this.materializeMissingShapeField(namespace, field);
+            } else if (!field.optional) {
+                this.reportError(field.declaration, `Namespace '${namespace.fullPath}' is missing required member '${field.name}'`);
+            }
+        }
+        this.configureShapeRuntime(namespace, shape);
+    }
+
+    private configureShapeRuntime(namespace: SourceNamespace, shape: SourceNamespaceShapeSchema) {
+        let fieldTypes = [...shape.fields.values()].map(field => this.getSchemaFieldRuntimeType(field));
+        let genericType = getWidestType(...fieldTypes);
+        namespace.runtimeType = Type.dict(genericType);
+        namespace.getDynamicMemberType = (member) => {
+            if (typeof member == "string") {
+                let field = shape.fields.get(member);
+                if (field != null) return this.getSchemaFieldRuntimeType(field);
+            }
+            return genericType;
+        };
+        namespace.getDynamicFunctionDefinition = (member) => {
+            if (typeof member != "string") return null;
+            let field = shape.fields.get(member);
+            return field?.kind == "function" ? field.definition : null;
+        };
+    }
+
+    private configureSourceNamespaceRuntime(namespace: SourceNamespace) {
+        if (namespace.effectiveSchema?.kind == "shape") {
+            this.configureShapeRuntime(namespace, namespace.effectiveSchema);
+            return;
+        }
+        let schema = namespace.schema;
+        if (schema == null) return;
+        if (schema.kind == "shape") {
+            let childType = Type.namespace(schema.prototype);
+            namespace.runtimeType = Type.dict(childType);
+            namespace.getDynamicMemberType = () => childType;
+            namespace.getDynamicFunctionDefinition = () => null;
+            return;
+        }
+        if (schema.kind == "value") {
+            namespace.runtimeType = Type.dict(schema.type);
+            namespace.getDynamicMemberType = () => schema.type;
+            namespace.getDynamicFunctionDefinition = () => null;
+            return;
+        }
+        namespace.runtimeType = Type.dict(Type.str);
+        namespace.getDynamicMemberType = () => Type.func(schema.definition);
+        namespace.getDynamicFunctionDefinition = () => schema.definition;
+    }
+
+    private validateSourceNamespaceSchemas() {
+        if (this.sourceNamespaceSchemasValidated) return;
+        this.sourceNamespaceSchemasValidated = true;
+
+        for (const namespace of this.sourceNamespaces) {
+            if (namespace.schemaDeclarations.length > 1) {
+                for (const declaration of namespace.schemaDeclarations) {
+                    this.reportError(declaration.name, `Namespace '${namespace.fullPath}' declares more than one schema`);
+                }
+                continue;
+            }
+            let declaration = namespace.schemaDeclarations[0];
+            if (declaration != null) {
+                namespace.schema = this.buildSourceNamespaceSchema(namespace, declaration);
+            }
+        }
+
+        for (const namespace of this.sourceNamespaces) {
+            if (namespace.schema?.kind == "shape") {
+                this.resolveSourceNamespaceShapeReferences(namespace.schema);
+            }
+        }
+
+        for (const namespace of [...this.sourceNamespaces]) {
+            let schema = namespace.schema;
+            if (schema == null) continue;
+            if (schema.kind == "value") {
+                for (const [name, definition] of Object.entries(namespace.members)) {
+                    if (!isSourceNamespaceVariableDefinition(definition)) {
+                        this.reportError(namespace.memberDeclarationNodes.get(name) ?? schema.declaration, `Namespace '${namespace.fullPath}' has a value schema, so '${name}' must be a variable`);
+                    } else if (
+                        !this.deferSourceNamespaceVariableTypeValidation
+                        && !definition.returnType.matches(Type.unknown)
+                        && !definition.returnType.isAssignableTo(schema.type)
+                    ) {
+                        this.reportError(definition.astNode ?? schema.declaration, `Namespace member '${namespace.fullPath}.${name}' has type '${definition.returnType}', expected '${schema.type}'`);
+                    }
+                }
+            } else if (schema.kind == "function") {
+                let memberKinds = new Set<"function" | "process">();
+                for (const [name, definition] of Object.entries(namespace.members)) {
+                    this.validateSchemaFunctionMember(namespace, name, definition, schema);
+                    if (isFunctionDefinition(definition)) {
+                        memberKinds.add(this.isProcessDefinition(definition) ? "process" : "function");
+                    }
+                }
+                if (schema.allowEitherKind && memberKinds.size == 1) {
+                    schema.definition.runtimeNamespaceCallKind = [...memberKinds][0];
+                    schema.definition.action = actions.get(
+                        schema.definition.runtimeNamespaceCallKind == "process"
+                            ? DFCodeblockName.START_PROCESS
+                            : DFCodeblockName.CALL_FUNCTION,
+                    )?.dynamic;
+                } else if (schema.allowEitherKind) {
+                    // Mixed namespaces use explicit source syntax: ordinary
+                    // calls target Functions and `start` targets Processes.
+                    schema.definition.runtimeNamespaceCallKind = "either";
+                    schema.definition.action = actions.get(DFCodeblockName.CALL_FUNCTION)?.dynamic;
+                }
+            } else {
+                for (const [name] of Object.entries(namespace.members)) {
+                    if (!namespace.children.has(name)) {
+                        this.reportError(namespace.memberDeclarationNodes.get(name) ?? schema.declaration, `Namespace '${namespace.fullPath}' has a namespace schema, so '${name}' must be a nested namespace`);
+                    }
+                }
+                for (const child of namespace.children.values()) {
+                    this.validateNamespaceAgainstShape(child, schema);
+                }
+            }
+            this.configureSourceNamespaceRuntime(namespace);
+        }
+
+        // Defaults may synthesize sub-namespaces which make a previously
+        // unresolved import valid. Resolve those imports once the namespace tree
+        // is complete, and only now report genuinely unknown paths.
+        this.resolveSourceImports(this.sourceNamespaceImportRoots, true, true);
+    }
+
     public resolveIdentifier(identifier: Token): Namespace | VariableEntry | Definition | null {
         let value: string = identifier.value;
         let frame: EnvironmentFrame = this.getNodeFrame(identifier);
 
         let varEntry = frame.getVariableEntry(value, identifier.startPos);
         if (varEntry != undefined) return varEntry;
+
+        let sourceNamespace = this.sourceNamespaceByNode.get(identifier);
+        let sourceMember = sourceNamespace?.findUnqualifiedMember(value);
+        if (sourceMember != undefined) return sourceMember;
+
+        let imported = frame.getImport(value);
+        if (imported != null) return imported;
 
         if (this.globalFrame.functions.has(value)) return this.globalFrame.functions.get(value)![0];
 
@@ -369,12 +1412,20 @@ export class TypeProcessor {
             return []
         }
         else if (expression instanceof AtomicExpression) {
-            if (expression.token.type == TokenType.IDENTIFIER && expression.token.value in Namespace.registry) {
-                // dont count namespace identifiers as variable requirements
-                return []
-            } else {
-                return this.getRequirements(expression.token, frame);
+            if (expression.token.type == TokenType.IDENTIFIER || expression.token.type == TokenType.NAMESPACE) {
+                let resolved = this.resolveIdentifier(expression.token);
+                if (
+                    resolved instanceof Namespace
+                    || isFunctionDefinition(resolved)
+                    || isValueDefinition(resolved)
+                    || isPropertyDefinition(resolved)
+                    || isNamespaceVariableDefinition(resolved)
+                ) {
+                    // Compiler-known namespace members are not variable inference requirements.
+                    return [];
+                }
             }
+            return this.getRequirements(expression.token, frame);
         }
         else if (expression instanceof DictionaryEntryExpression) {
             return this.getRequirements(expression.value, frame);
@@ -537,6 +1588,11 @@ export class TypeProcessor {
         if (statement instanceof FunctionStatement) {
             let backendName = statement.backendName ?? statement.name.value;
             let definition = this.createFunctionDefinition(statement, frame, backendName);
+            // Source namespace functions have already been installed on their
+            // namespace during the namespace collection pass.  We still create
+            // this frame-local definition to register parameters, but they must
+            // never leak into the ordinary top-level function namespace.
+            if (this.sourceNamespaceFunctionStatements.has(statement)) return;
             if (definition && frame.parent?.astNode instanceof RootNode) {
                 let isProcess = statement.headerType == DFCodeblockName.PROCESS;
                 let map = this.globalFrame[isProcess ? "processes" : "functions"];
@@ -694,6 +1750,7 @@ export class TypeProcessor {
                     if (statement instanceof TypeStatement) this.applyStatementVariables(statement, rootFrame);
                 }
             }
+            this.prepareSourceNamespaces(roots);
             for (let i = 0; i < roots.length; i++) {
                 this.collectionStage(roots[i].statements, rootFrames[i]);
             }
@@ -722,6 +1779,25 @@ export class TypeProcessor {
             if (statement instanceof TypeStatement) {
                 // already registered by the cross-file pre-pass above; registering it again here
                 // would make it look like a duplicate type declaration
+                continue;
+            }
+
+            if (statement instanceof ImportStatement) {
+                if (!(frame.astNode instanceof RootNode)) {
+                    this.reportError(statement.keyword, "Imports can only appear at the top level of a file");
+                }
+                continue;
+            }
+
+            if (statement instanceof NamespaceStatement) {
+                if (!(statement.chunk instanceof ChunkExpression)) continue;
+                let namespaceFrame = this.framesByASTNode.get(statement.chunk) ?? frame.addChild(statement.chunk);
+                this.framesByASTNode.set(statement.chunk, namespaceFrame);
+                this.collectionStage(statement.chunk.statements, namespaceFrame);
+                continue;
+            }
+
+            if (statement instanceof NamespaceVariableStatement || statement instanceof NamespaceSchemaStatement) {
                 continue;
             }
             
@@ -816,8 +1892,82 @@ export class TypeProcessor {
         }
     }
 
+    private evaluateSourceNamespaceVariables(deferTypeValidation: boolean = false) {
+        for (const definition of this.sourceNamespaceVariables) {
+            let declaration = definition.declaration;
+            let initializer = definition.initializer;
+            if (initializer == null) {
+                if (!definition.explicitlyTyped && declaration != null) {
+                    this.reportError(declaration.name, `Namespace variable '${definition.namespace.fullPath}.${definition.name}' requires a type annotation or an initializer`);
+                }
+                continue;
+            }
+
+            let initializerType = this.evaluateExpression(initializer);
+            if (!definition.explicitlyTyped) {
+                definition.returnType = (
+                    initializer instanceof DictionaryExpression || initializer instanceof ListExpression
+                        ? this.genericizeType(initializerType)
+                        : initializerType
+                );
+            } else if (!deferTypeValidation && !initializerType.isAssignableTo(definition.returnType)) {
+                this.reportError(
+                    initializer,
+                    `Type '${initializerType}' is not assignable to namespace variable type '${definition.returnType}'`,
+                );
+            }
+        }
+        this.expressionTypeCache.clear();
+    }
+
+    /**
+     * Namespace runtime types may be needed to infer a variable initializer.
+     * Validate source variables only after schemas have configured those types.
+     */
+    private validateFinalSourceNamespaceVariableTypes() {
+        const validate = (
+            namespace: SourceNamespace,
+            name: string,
+            definition: Definition | undefined,
+            expected: Type,
+        ) => {
+            if (!isSourceNamespaceVariableDefinition(definition)) return;
+            if (definition.returnType.matches(Type.unknown) || definition.returnType.isAssignableTo(expected)) return;
+            this.reportError(
+                definition.astNode ?? namespace.memberDeclarationNodes.get(name) ?? namespace.declarations[0],
+                `Namespace member '${namespace.fullPath}.${name}' has type '${definition.returnType}', expected '${expected}'`,
+            );
+        };
+
+        for (const namespace of this.sourceNamespaces) {
+            if (namespace.schema?.kind == "value") {
+                for (const [name, definition] of Object.entries(namespace.members)) {
+                    validate(namespace, name, definition, namespace.schema.type);
+                }
+            }
+            if (namespace.effectiveSchema?.kind == "shape") {
+                for (const field of namespace.effectiveSchema.fields.values()) {
+                    if (field.kind == "value") {
+                        validate(namespace, field.name, namespace.members[field.name], field.type);
+                    }
+                }
+            }
+        }
+    }
+
     evaluationStage(frame: EnvironmentFrame = this.globalFrame) {
         this.expressionTypeCache.clear();
+
+        if (frame == this.globalFrame) {
+            this.deferSourceNamespaceVariableTypeValidation = true;
+            this.evaluateSourceNamespaceVariables(true);
+            this.validateSourceNamespaceSchemas();
+            this.deferSourceNamespaceVariableTypeValidation = false;
+            // Schema defaults can add more namespace variables, and runtime
+            // shapes now make schema-dependent initializer types resolvable.
+            this.evaluateSourceNamespaceVariables();
+            this.validateFinalSourceNamespaceVariableTypes();
+        }
 
         let newSolves = -1;
         let hitWall = false;
@@ -907,13 +2057,23 @@ export class TypeProcessor {
         if (expression instanceof AtomicExpression) {
             let token = expression.token;
             switch (token.type) {
-                case TokenType.IDENTIFIER: {
+                case TokenType.IDENTIFIER:
+                case TokenType.NAMESPACE: {
                     let resolved = this.resolveIdentifier(token);
                     if (resolved instanceof Namespace) {
                         return Type.namespace(resolved);
                     }
                     else if (isFunctionDefinition(resolved)) {
                         return Type.func(resolved);
+                    }
+                    else if (isValueDefinition(resolved)) {
+                        return resolved.returnType;
+                    }
+                    else if (isPropertyDefinition(resolved)) {
+                        return resolved.type;
+                    }
+                    else if (isNamespaceVariableDefinition(resolved)) {
+                        return resolved.returnType;
                     }
                     else if (isVariableEntry(resolved) && resolved.type != null) {
                         return resolved.type;
@@ -983,6 +2143,21 @@ export class TypeProcessor {
                 methodCallOf = this.evaluateExpression(expression.callee.accessee);
             }
             return def.getReturnType(expression.args.elements, this, methodCallOf) ?? Type.unknown;
+        }
+        else if (expression instanceof CallOrStartExpression) {
+            let calleeType = this.evaluateExpression(expression.callee, frame);
+            let definition: FunctionDefinition | null = null;
+            if (calleeType.name == "func") {
+                definition = (calleeType.data as FuncTypeData).definition;
+            } else if (expression.callee instanceof AtomicExpression) {
+                definition = this.getUserFuncDef(
+                    expression.keyword.type == TokenType.START,
+                    expression.callee.token.value,
+                    true,
+                ) ?? null;
+            }
+            if (definition == null || expression.keyword.type == TokenType.START) return Type.void;
+            return definition.getReturnType(expression.args.elements, this) ?? Type.unknown;
         }
         else if (expression instanceof BinaryExpression) {
             return Operations.evaluateBinaryType(

@@ -124,6 +124,129 @@ export class ExtendStatement extends Statement {
     ) {super(keyword.startPos, chunk.endPos);}
 }
 
+/** A compile-time namespace declaration. Its path is relative when nested in another namespace. */
+export class NamespaceStatement extends Statement {
+    constructor(
+        public keyword: Token,
+        public path: Token[],
+        public dots: Token[],
+        public chunk: ChunkExpression | MissingExpression,
+    ) {
+        super(keyword.startPos, chunk.endPos);
+    }
+}
+
+/** A namespace variable declaration. Namespace variables deliberately have no source-level scope keyword. */
+export class NamespaceVariableStatement extends Statement {
+    constructor(
+        public name: Token,
+        public assignedType: TypeAssignmentExpression | null,
+        public assignmentOperator: Token | null,
+        public initialValue: Expression | null,
+    ) {
+        super(
+            name.startPos,
+            initialValue?.endPos ?? assignmentOperator?.endPos ?? assignedType?.endPos ?? name.endPos,
+        );
+    }
+}
+
+export type NamespaceSchemaTypeExpression =
+    | TypeExpression
+    | FunctionSchemaTypeExpression
+    | NamespaceSchemaReferenceExpression
+    | NamespaceShapeSchemaExpression;
+
+/** `schema: ...;` within a namespace declaration. */
+export class NamespaceSchemaStatement extends Statement {
+    constructor(
+        public name: Token,
+        public colon: Token,
+        public schemaType: NamespaceSchemaTypeExpression,
+        public semicolon: Token,
+    ) {
+        super(name.startPos, semicolon.endPos);
+    }
+}
+
+/** `function (arg: type) -> type` used by function schemas. */
+export class FunctionSchemaTypeExpression extends ASTNode {
+    constructor(
+        public keyword: Token,
+        public params: ListExpression<ParameterExpression> | null,
+        public arrow: Token,
+        public returnType: TypeExpression,
+    ) {
+        super(keyword.startPos, returnType.endPos);
+    }
+}
+
+/** `namespace some.path` as a member type inside a namespace-shape schema. */
+export class NamespaceSchemaReferenceExpression extends ASTNode {
+    constructor(
+        public keyword: Token,
+        public path: Token[],
+        public dots: Token[],
+    ) {
+        super(keyword.startPos, path[path.length - 1]?.endPos ?? keyword.endPos);
+    }
+}
+
+/** A field declared inside `schema: namespace { ... }`. */
+export class NamespaceSchemaFieldStatement extends Statement {
+    constructor(
+        public name: Token,
+        public optionalMarker: Token | null,
+        public colon: Token,
+        public schemaType: NamespaceSchemaTypeExpression,
+        public assignmentOperator: Token | null,
+        public defaultValue: Expression | null,
+        public semicolon: Token,
+    ) {
+        super(name.startPos, semicolon.endPos);
+    }
+}
+
+/** A function or process signature declared inside `schema: namespace { ... }`. */
+export class NamespaceSchemaFunctionStatement extends Statement {
+    constructor(
+        public keyword: Token,
+        public name: Token,
+        public params: ListExpression<ParameterExpression> | null,
+        public arrow: Token,
+        public returnType: TypeExpression,
+        public semicolon: Token,
+    ) {
+        super(keyword.startPos, semicolon.endPos);
+    }
+}
+
+/** `namespace { ... }` used as the value of a schema declaration. */
+export class NamespaceShapeSchemaExpression extends ASTNode {
+    constructor(
+        public keyword: Token,
+        public opener: Token,
+        public members: (NamespaceSchemaFieldStatement | NamespaceSchemaFunctionStatement)[],
+        public closer: Token,
+    ) {
+        super(keyword.startPos, closer.endPos);
+    }
+}
+
+/** Imports either a namespace path or one member from a namespace. */
+export class ImportStatement extends Statement {
+    constructor(
+        public keyword: Token,
+        public path: Token[],
+        public dots: Token[],
+        public asKeyword: Token | null,
+        public alias: Token | null,
+        public semicolon: Token,
+    ) {
+        super(keyword.startPos, semicolon.endPos);
+    }
+}
+
 export class RepeatStatement extends Statement {
     constructor(
         public keyword: Token,

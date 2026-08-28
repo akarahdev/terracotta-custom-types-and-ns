@@ -7,7 +7,9 @@ export class Namespace {
         public identifier: string,
         public members: {[identifier: string]: Definition} = {},
         public nameFunction: FunctionDefinition | null = null,
+        {registerGlobally = true}: {registerGlobally?: boolean} = {},
     ) {
+        if (!registerGlobally) return;
         if (identifier in Namespace.registry) {
             throw new Error(`Attempted to register duplicate namespace '${identifier}'`);
         }

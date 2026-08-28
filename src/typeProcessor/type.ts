@@ -253,6 +253,12 @@ export class Type {
         'namespace', 0,
         (namespace: Namespace) => {
             let getPropertyType = (m: string) => getNamespaceMemberType(namespace, m)
+            let getMemberType = (m?: string | number) => {
+                let dynamicTypeGetter = (namespace as Namespace & {
+                    getDynamicMemberType?: ((member?: string | number) => Type) | null,
+                }).getDynamicMemberType;
+                return dynamicTypeGetter?.(m) ?? Type.unknown;
+            }
             let getPropertyDefinition = (m: string) => {
                 let def = namespace.members[m];
                 if (isPropertyDefinition(def) && def.valueExclusive) return null;
@@ -261,7 +267,19 @@ export class Type {
             let properties = Object.keys(namespace.members)
                 .filter(k => !(isPropertyDefinition(namespace.members[k]) && namespace.members[k].valueExclusive) );
             let getProperties = () => properties;
-            return new Type('namespace',{getPropertyType, getPropertyDefinition, getProperties, data: {namespace}})
+            let namespaceType: Type;
+            namespaceType = new Type('namespace', {
+                getMemberType,
+                getPropertyType,
+                getPropertyDefinition,
+                getProperties,
+                getRuntimeType: () => (
+                    (namespace as Namespace & {runtimeType?: Type | null}).runtimeType
+                    ?? namespaceType
+                ),
+                data: {namespace},
+            });
+            return namespaceType;
         }
     );
 
@@ -348,15 +366,17 @@ export class Type {
     }
 
     public readonly data: TypeExtraData
+    private runtimeTypeCallback: (() => Type) | null = null;
 
     constructor(
         public readonly name: string,
-        {getMemberType, getMembers, getPropertyType, getPropertyDefinition, getProperties, strictMatchCallback, assignabilityCallback, stringify, data = null}: {
+        {getMemberType, getMembers, getPropertyType, getPropertyDefinition, getProperties, getRuntimeType, strictMatchCallback, assignabilityCallback, stringify, data = null}: {
             getMemberType?: (member?: string | number) => Type,
             getMembers?: () => (string[] | null),
             getPropertyType?: (p: string) => Type;
             getPropertyDefinition?: (p: string) => Definition | null,
             getProperties?: () => (string[] | null);
+            getRuntimeType?: () => Type,
             strictMatchCallback?: (other: Type) => boolean,
             assignabilityCallback?: (to: Type) => boolean,
             stringify?: () => string,
@@ -368,6 +388,7 @@ export class Type {
         if (getPropertyType) this.getPropertyType = getPropertyType;
         if (getPropertyDefinition) this.getPropertyDefinition = getPropertyDefinition
         if (getProperties) this.getProperties = getProperties;
+        if (getRuntimeType) this.runtimeTypeCallback = getRuntimeType;
         if (strictMatchCallback) this.strictlyMatches = strictMatchCallback;
         if (assignabilityCallback) this.isAssignableTo = assignabilityCallback;
         if (stringify) {
@@ -383,6 +404,7 @@ export class Type {
     [Symbol.toPrimitive] = this.toString;
 
     getRuntimeType(): Type {
+        if (this.runtimeTypeCallback != null) return this.runtimeTypeCallback();
         if (this.data && "baseType" in this.data) {
             return this.data.baseType.getRuntimeType();
         }

@@ -1,4 +1,4 @@
-import { Diagnostic, URI } from "vscode-languageserver";
+import { Diagnostic, DiagnosticSeverity, URI } from "vscode-languageserver";
 import { TrackedDocument } from "./trackedDocument.ts";
 import * as fs from "node:fs/promises"
 import { LanguageServer } from "./languageServer.ts";
@@ -82,6 +82,7 @@ export class WorkspaceManager {
 
             diagnosticsByUri[doc.uri].push({
                 message: e.message,
+                severity: e.isWarning ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
                 range: {
                     start: doc.indexToLinePosition(e.getStartPos()),
                     end: doc.indexToLinePosition(e.getEndPos()),

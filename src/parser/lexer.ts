@@ -194,6 +194,8 @@ export class Lexer {
             this.makeKeywordPattern(TokenType.DECLARE,          "declare"),
             this.makeKeywordPattern(TokenType.TYPE,             "type"),
             this.makeKeywordPattern(TokenType.EXTEND,           "extend"),
+            this.makeKeywordPattern(TokenType.NAMESPACE,        "namespace"),
+            this.makeKeywordPattern(TokenType.IMPORT,           "import"),
             
             this.makeKeywordPattern(TokenType.CALL,             "call"),
             this.makeKeywordPattern(TokenType.START,            "start"),
@@ -243,6 +245,7 @@ export class Lexer {
             this.makeSymbolPattern(TokenType.PERCENT_EQUALS,    "%="),
             
             this.makeSymbolPattern(TokenType.POW,               "**"),
+            this.makeSymbolPattern(TokenType.ARROW,             "->"),
             this.makeSymbolPattern(TokenType.PLUS,              "+"),
             this.makeSymbolPattern(TokenType.MINUS,             "-"),
             this.makeSymbolPattern(TokenType.STAR,              "*"),
@@ -340,4 +343,3 @@ export class Lexer {
         this.tokens.push(new Token(this.script.length,this.script.length, TokenType.EOF, ""));
     }
 }
-

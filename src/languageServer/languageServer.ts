@@ -169,6 +169,14 @@ function generateDefinitionCompletion(name: string, def: Definition, allowCallOr
             documentation = getValueDocumentation(def.gameValue);
         }
     }
+    else if (def.definitionType == DefinitionType.NAMESPACE_VARIABLE) {
+        item = {
+            label: name,
+            kind: CompletionItemKind.Field,
+            sortText: name,
+        };
+        documentation = `\`\`\`tc\n${name}: ${def.returnType.toString()}\n\`\`\` \nThis is a namespace-scoped variable.`;
+    }
     else /*if (def.definitionType == DefinitionType.PROPERTY)*/ {
         item = {
             label: name,
@@ -374,8 +382,14 @@ function getNearestCallNode(node: ASTNode, typeProcessor: TypeProcessor, envFram
     
     
     if (callNode instanceof CallOrStartExpression) {
-        let isProcess = callNode.keyword.type == TokenType.START;
-        let definition = typeProcessor.getUserFuncDef(isProcess, callNode.callee.value, true);
+        let calleeType = typeProcessor.evaluateExpression(callNode.callee, envFrame);
+        let definition: FunctionDefinition | null = null;
+        if (calleeType.name == "func") {
+            definition = (calleeType.data as FuncTypeData).definition;
+        } else if (callNode.callee instanceof AtomicExpression) {
+            let isProcess = callNode.keyword.type == TokenType.START;
+            definition = typeProcessor.getUserFuncDef(isProcess, callNode.callee.token.value, true) ?? null;
+        }
         return definition ? [callNode, definition] : [null, null];
     } else if (callNode instanceof CallExpression) {
         let closestForLoop = callNode.getClosestAncestor(ForStatement);
@@ -483,8 +497,14 @@ export class LanguageServer {
             else if (node instanceof Token && node.parent instanceof VariableExpression && node.keyInParent == 'name') {
                 getVarEntryOf = node.parent.getVarId();
             }
-            else if (node instanceof Token && node.parent instanceof CallOrStartExpression && node.keyInParent == "callee") {
-                let type = node.parent.keyword.type == TokenType.CALL ? "functions" : "processes"
+            if (
+                !resolved
+                && node instanceof Token
+                && node.parent instanceof AtomicExpression
+                && node.parent.parent instanceof CallOrStartExpression
+                && node.parent.keyInParent == "callee"
+            ) {
+                let type = node.parent.parent.keyword.type == TokenType.CALL ? "functions" : "processes";
                 resolved = doc.workspace.typeProcessor.globalFrame[type].get(node.value)?.[0] ?? null;
             }
             if (getVarEntryOf) {
@@ -814,9 +834,19 @@ export class LanguageServer {
                 items.push(...typeNameCompletions);
             }
             // function names in a call/start expression
-            else if (node instanceof CallOrStartExpression || (node instanceof Token && node.parent instanceof CallOrStartExpression && node.keyInParent == "callee")) {
+            else if (
+                node instanceof CallOrStartExpression
+                || (
+                    node instanceof Token
+                    && node.parent instanceof AtomicExpression
+                    && node.parent.parent instanceof CallOrStartExpression
+                    && node.parent.keyInParent == "callee"
+                )
+            ) {
                 includeGenerics = false;
-                let callExpression = (node instanceof CallOrStartExpression ? node : node.parent) as CallOrStartExpression;
+                let callExpression = (
+                    node instanceof CallOrStartExpression ? node : node.parent!.parent
+                ) as CallOrStartExpression;
                 let isProcess = callExpression.keyword.type == TokenType.START;
                 items.push(...doc.workspace.typeProcessor.globalFrame[isProcess ? "processes" : "functions"].values().map(
                     v => {

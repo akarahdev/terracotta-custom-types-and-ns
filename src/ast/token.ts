@@ -11,6 +11,8 @@ export enum TokenType {
     TYPE,
     EXTEND,
     MACRO,
+    NAMESPACE,
+    IMPORT,
 
     CALL,
     START,
@@ -73,6 +75,7 @@ export enum TokenType {
     COMMA,
     DOT,
     ELLIPSES,
+    ARROW,
     
     DOUBLE_EQUALS,
     BANG_EQUALS,

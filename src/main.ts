@@ -127,7 +127,11 @@ async function Main() {
 
             let errors = [...lexer.errors, ...parser.errors, ...typeChecker.errors, ...compiler.errors];
 
-            if (errors.length == 0) {
+            let hardErrors = errors.filter(error => !error.isWarning);
+            if (hardErrors.length == 0) {
+                for (const warning of errors.filter(error => error.isWarning)) {
+                    printError(warning, warning.getFilePath());
+                }
                 if (values.includemeta) {
                     output = JSON.stringify(Object.fromEntries(results.entries()));
                 } else {
@@ -144,7 +148,15 @@ async function Main() {
         else if (values.project) {
             let results = await compileProject(values.project, parseInt(values.plotsize ?? "-1") ?? -1, rank);
 
-            if (results.errors.length == 0) {
+            let hardErrors = results.errors.filter(error => !error.isWarning);
+            if (hardErrors.length == 0) {
+                for (const warning of results.errors.filter(error => error.isWarning)) {
+                    let fileName = warning.getFilePath();
+                    if (fileName.startsWith(values.project)) {
+                        fileName = fileName.substring(values.project.length+1);
+                    }
+                    printError(warning, fileName);
+                }
                 if (values.includemeta) {
                     output = JSON.stringify(results)
                 } else {

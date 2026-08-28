@@ -123,7 +123,12 @@ export class CallOrStartExpression extends Expression {
     public args: ListExpression;
     constructor (
         public keyword: Token,
-        public callee: Token,
+        /**
+         * `call` and `start` historically accepted a bare name.  Keeping the
+         * target as an expression also permits namespace members such as
+         * `start workers[selected](job)`.
+         */
+        public callee: Expression,
         args: ListExpression | null,
     ) {
         super(keyword.startPos, args != null ? args.endPos : callee.endPos);

@@ -1,4 +1,4 @@
-import { Diagnostic, Position, TextDocumentContentChangeEvent, URI } from "vscode-languageserver";
+import { Diagnostic, DiagnosticSeverity, Position, TextDocumentContentChangeEvent, URI } from "vscode-languageserver";
 import * as fs from "node:fs/promises";
 import { Lexer } from "../parser/lexer.ts";
 import { Parser } from "../parser/parser.ts";
@@ -81,6 +81,7 @@ export class TrackedScript extends TrackedDocument {
                 for (const error of [...this.lexer.errors, ...this.parser.errors, ...this.compiler.errors]) {
                     this.diagnostics.push({
                         message: error.message,
+                        severity: error.isWarning ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
                         range: {
                             start: this.indexToLinePosition(error.getStartPos()),
                             end: this.indexToLinePosition(error.getEndPos()),
