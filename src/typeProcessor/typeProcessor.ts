@@ -94,6 +94,7 @@ import { commentsToDocumentation } from "../ast/documenter.ts";
 import {
   getSourceNamespaceMemberBackendName,
   isSourceNamespaceVariableDefinition,
+  SOURCE_NAMESPACE_PATH_DELIMITER,
   SourceNamespace,
   SourceNamespaceFunctionSchema,
   SourceNamespaceNestedShapeField,
@@ -108,10 +109,12 @@ import {
   CodeValue,
   EmptyValue,
   NamespaceValue,
+  RuntimeNamespaceValue,
   StringValue,
   TangibleValue,
   VariableValue,
 } from "../compiler/codeValue.ts";
+import { SegmentPCode } from "../pcode/pcode.ts";
 import { validateArguments } from "../util/argValidation.ts";
 import { handleSingleBlockReturnVars } from "../compiler/namespace/builtins.ts";
 import "../compiler/namespace/namespaceReflection.ts";
@@ -645,10 +648,13 @@ export class TypeProcessor {
     astNode?: ASTNode,
   ): CodeValue {
     if (namespace.runtimeBacked) {
-      return new VariableValue(
-        namespace.dictionaryBackendName,
-        VariableScope.GLOBAL,
-        Type.namespace(namespace),
+      return new RuntimeNamespaceValue(
+        namespace,
+        [
+          new SegmentPCode(
+            namespace.path.join(SOURCE_NAMESPACE_PATH_DELIMITER),
+          ),
+        ],
         astNode,
       );
     }
@@ -937,12 +943,8 @@ export class TypeProcessor {
           return [new EmptyValue(callNode), []];
         }
         validateArguments(args, callNode, definition.signatures, ctx);
-        let functionName = ctx.tvp.newTempVar(Type.str);
         let finalArgs = args.filter((arg) => arg instanceof TangibleValue);
-        let lookup = new ActionBlock(DFCodeblockName.SET_VARIABLE, {
-          action: "GetDictValue",
-          args: [functionName, access.dictionary, access.key],
-        });
+        let functionName = access.name.join("");
         let startsProcess = callNode instanceof CallOrStartExpression &&
           callNode.keyword.type == TokenType.START;
         let requestedKind = startsProcess ? "process" : "function";
@@ -967,9 +969,8 @@ export class TypeProcessor {
         }
         if (startsProcess) {
           return [new EmptyValue(callNode), [
-            lookup,
             new ActionBlock(DFCodeblockName.START_PROCESS, {
-              action: `%var(${functionName.name})`,
+              action: functionName,
               args: finalArgs,
             }),
           ]];
@@ -982,9 +983,8 @@ export class TypeProcessor {
           finalArgs,
         );
         return [returnValue, [
-          lookup,
           new ActionBlock(DFCodeblockName.CALL_FUNCTION, {
-            action: `%var(${functionName.name})`,
+            action: functionName,
             args: finalArgs,
           }),
         ]];
@@ -993,7 +993,7 @@ export class TypeProcessor {
     return definition;
   }
 
-  private createSchemaDictionaryProperty(
+  private createSchemaNamespaceProperty(
     name: string,
     type: Type,
     declaration: ASTNode,
@@ -1002,15 +1002,18 @@ export class TypeProcessor {
       definitionType: DefinitionType.PROPERTY,
       type,
       compileGet: (ctx, propertyOf) => {
-        if (!(propertyOf instanceof TangibleValue)) {
+        let namespaceValue = ctx.compiler.getRuntimeSourceNamespaceValue(
+          propertyOf,
+        );
+        if (namespaceValue == null) {
           ctx.reportError(
             declaration,
             `Schema member '${name}' needs a runtime namespace value`,
           );
           return [new EmptyValue(declaration), []];
         }
-        return ctx.compiler.compileSourceNamespaceReferenceGet(
-          propertyOf,
+        return ctx.compiler.compileSourceNamespaceMemberAccess(
+          namespaceValue,
           new StringValue(name, declaration),
           type,
           declaration,
@@ -1018,20 +1021,30 @@ export class TypeProcessor {
         );
       },
       compileSet: (newValue, ctx, propertyOf) => {
-        if (!(propertyOf instanceof TangibleValue)) {
+        let namespaceValue = ctx.compiler.getRuntimeSourceNamespaceValue(
+          propertyOf,
+        );
+        if (namespaceValue == null) {
           ctx.reportError(
             declaration,
             `Schema member '${name}' needs a runtime namespace value`,
           );
           return [];
         }
-        let [target, code] = ctx.compiler.compileSourceNamespaceReferenceGet(
-          propertyOf,
+        let [target, code] = ctx.compiler.compileSourceNamespaceMemberAccess(
+          namespaceValue,
           new StringValue(name, declaration),
           type,
           declaration,
           ctx,
         );
+        if (!(target instanceof TangibleValue)) {
+          ctx.reportError(
+            declaration,
+            `Schema member '${name}' does not resolve to a writable value`,
+          );
+          return code;
+        }
         return [
           ...code,
           new ActionBlock(DFCodeblockName.SET_VARIABLE, {
@@ -1118,7 +1131,7 @@ export class TypeProcessor {
           type,
         };
         schema.fields.set(name, field);
-        prototype.members[name] = this.createSchemaDictionaryProperty(
+        prototype.members[name] = this.createSchemaNamespaceProperty(
           name,
           type,
           fieldDeclaration,
@@ -1188,7 +1201,7 @@ export class TypeProcessor {
         shape,
       };
       schema.fields.set(name, field);
-      prototype.members[name] = this.createSchemaDictionaryProperty(
+      prototype.members[name] = this.createSchemaNamespaceProperty(
         name,
         this.getSchemaFieldRuntimeType(field),
         fieldDeclaration,
@@ -2547,10 +2560,11 @@ export class TypeProcessor {
 
           let exprType = this.evaluateExpression(entry.valueExpression, frame);
           if (entry.forLoopVarPos != undefined) {
-            // Schema namespaces are represented as dictionaries at
-            // runtime, so their key/value loop variables need the
-            // dictionary's runtime member types rather than the
-            // compile-time-only `namespace` wrapper type.
+            // Schema namespaces use a virtual mapping type for static type
+            // inference. Their key/value loop variables therefore use the
+            // configured member types rather than the compile-time-only
+            // `namespace` wrapper type; emitted code uses key lists and
+            // source paths, not runtime dictionaries.
             let runtimeExprType = exprType.getRuntimeType();
             if (
               runtimeExprType.matches(Type.list) && entry.forLoopVarPos == 0

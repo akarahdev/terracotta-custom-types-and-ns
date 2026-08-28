@@ -17,25 +17,20 @@ import type { Type } from "../../typeProcessor/type.ts";
 import { Namespace } from "./namespace.ts";
 
 /**
- * Source namespaces share Terracotta's existing extension-name family while
- * remaining disjoint from extension methods. Extension methods always contain
- * an additional underscore between their type and member names; the encoded
- * namespace suffix deliberately contains none. Hex also keeps dotted paths
- * injective without imposing a depth limit.
+ * Source namespaces use readable, segment-delimited backing names. `@` is not
+ * valid in Terracotta identifiers, so static namespace paths remain injective
+ * while dynamic segments can be inserted directly as `%var(...)` PCode.
+ *
+ * These prefixes deliberately remain outside the normal extension pattern:
+ * extension methods use `__TC_EXT_<type>_<member>`, whereas namespace members
+ * and reflection lists use a literal `@` after their distinct marker.
  */
-export const SOURCE_NAMESPACE_MANGLE_PREFIX = "__TC_EXT_NS";
-export const SOURCE_NAMESPACE_DICTIONARY_MANGLE_PREFIX = "__TC_EXT_ND";
-
-function encodePathSegment(segment: string): string {
-  return [...segment]
-    .map((character) => character.charCodeAt(0).toString(16).padStart(2, "0"))
-    .join("");
-}
+export const SOURCE_NAMESPACE_MANGLE_PREFIX = "__TC_EXT_NS@";
+export const SOURCE_NAMESPACE_KEY_LIST_MANGLE_PREFIX = "__TC_EXT_NK@";
+export const SOURCE_NAMESPACE_PATH_DELIMITER = "@";
 
 export function encodeSourceNamespacePath(path: readonly string[]): string {
-  // Source identifiers are ASCII and cannot contain a NUL character, so the
-  // byte delimiter preserves every segment boundary exactly.
-  return path.map(encodePathSegment).join("00");
+  return path.join(SOURCE_NAMESPACE_PATH_DELIMITER);
 }
 
 export function getSourceNamespaceMemberBackendName(
@@ -43,15 +38,20 @@ export function getSourceNamespaceMemberBackendName(
   member: string,
 ): string {
   return `${SOURCE_NAMESPACE_MANGLE_PREFIX}${
-    encodeSourceNamespacePath([...path, member])
+    encodeSourceNamespacePath([
+      ...path,
+      member,
+    ])
   }`;
 }
 
-export function getSourceNamespaceDictionaryBackendName(
+export function getSourceNamespaceKeyListBackendName(
   path: readonly string[],
 ): string {
-  return `${SOURCE_NAMESPACE_DICTIONARY_MANGLE_PREFIX}${
-    encodeSourceNamespacePath(path)
+  return `${SOURCE_NAMESPACE_KEY_LIST_MANGLE_PREFIX}${
+    encodeSourceNamespacePath(
+      path,
+    )
   }`;
 }
 
@@ -69,12 +69,12 @@ export class SourceNamespace extends Namespace {
   schema: SourceNamespaceSchema | null = null;
   /** A child namespace inherits the shape it conforms to at runtime. */
   effectiveSchema: SourceNamespaceSchema | null = null;
-  /** Runtime representation used by `Type.namespace(...).getRuntimeType()`. */
+  /** Runtime member type used by `Type.namespace(...).getRuntimeType()`. */
   runtimeType: Type | null = null;
   /**
    * The shape represented by a runtime namespace value.  Shape prototypes
    * and concrete conformers both use this to distinguish function selectors
-   * from variable-name references during reflection and iteration.
+   * from value sources during reflection and iteration.
    */
   runtimeShape: SourceNamespaceShapeSchema | null = null;
   /** Used by bracket access on schema-backed namespaces. */
@@ -95,8 +95,8 @@ export class SourceNamespace extends Namespace {
     return this.path.join(".");
   }
 
-  get dictionaryBackendName(): string {
-    return getSourceNamespaceDictionaryBackendName(this.path);
+  get keyListBackendName(): string {
+    return getSourceNamespaceKeyListBackendName(this.path);
   }
 
   get runtimeBacked(): boolean {
@@ -105,8 +105,8 @@ export class SourceNamespace extends Namespace {
 
   /**
    * Shape prototypes represent values returned by dynamic namespace access.
-   * They do not own a global dictionary variable, but their configured
-   * runtime type still supports dictionary reflection and iteration.
+   * They do not own a concrete source path, but their configured runtime type
+   * still supports key-list reflection and iteration.
    */
   get supportsRuntimeReflection(): boolean {
     return this.runtimeBacked || this.runtimeType != null;
@@ -213,9 +213,9 @@ export interface SourceNamespaceNestedShapeField
 }
 
 /**
- * `null` means every immediate dictionary member is a function selector.
+ * `null` means every immediate member is a function selector.
  * A non-null set identifies the selector-valued fields of a namespace shape;
- * all remaining dictionary members contain names of global value variables.
+ * all remaining members resolve through their backing global-variable name.
  */
 export function getSourceNamespaceRuntimeFunctionMembers(
   namespace: SourceNamespace,
@@ -230,6 +230,30 @@ export function getSourceNamespaceRuntimeFunctionMembers(
   return new Set(
     [...shape.fields.values()]
       .filter((field) => field.kind == "function")
+      .map((field) => field.name),
+  );
+}
+
+/**
+ * `null` means every immediate member is a nested namespace source. A
+ * non-null set identifies nested namespace fields in a mixed shape; remaining
+ * non-function fields are ordinary backing variables.
+ */
+export function getSourceNamespaceRuntimeNestedMembers(
+  namespace: SourceNamespace,
+): Set<string> | null {
+  if (namespace.effectiveSchema == null && namespace.schema?.kind == "shape") {
+    return null;
+  }
+
+  let shape = namespace.effectiveSchema?.kind == "shape"
+    ? namespace.effectiveSchema
+    : namespace.runtimeShape;
+  if (shape == null) return new Set();
+
+  return new Set(
+    [...shape.fields.values()]
+      .filter((field) => field.kind == "namespace")
       .map((field) => field.name),
   );
 }

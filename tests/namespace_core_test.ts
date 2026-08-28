@@ -11,7 +11,7 @@ import {
   TypeProcessor,
 } from "../src/typeProcessor/typeProcessor.ts";
 import {
-  getSourceNamespaceDictionaryBackendName,
+  getSourceNamespaceKeyListBackendName,
   getSourceNamespaceMemberBackendName,
 } from "../src/compiler/namespace/sourceNamespace.ts";
 
@@ -23,9 +23,27 @@ function renderedVariableName(value: VariableValue): string {
   return typeof value.name == "string" ? value.name : value.name.join("");
 }
 
-function isDynamicVariableReference(value: unknown): value is VariableValue {
+function isDynamicSourceNamespaceReference(
+  value: unknown,
+): value is VariableValue {
   return value instanceof VariableValue &&
-    renderedVariableName(value).startsWith("%var(");
+    renderedVariableName(value).startsWith("__TC_EXT_NS@") &&
+    renderedVariableName(value).includes("%var(");
+}
+
+function isSourceNamespaceKeyList(value: unknown): value is VariableValue {
+  return value instanceof VariableValue &&
+    renderedVariableName(value).startsWith("__TC_EXT_NK@");
+}
+
+function isDictionaryAction(block: unknown): boolean {
+  return block instanceof ActionBlock && [
+    "CreateDict",
+    "GetDictValue",
+    "SetDictValue",
+    "GetDictKeys",
+    "DictHasKey",
+  ].includes(block.action);
 }
 
 function compileScripts(
@@ -155,8 +173,12 @@ Deno.test("namespace mangling is injective and cannot overlap extension-method n
     "distinct dotted paths must remain distinct after mangling",
   );
   assert(
-    !memberName.substring("__TC_EXT_".length).includes("_"),
-    "namespace suffixes must remain disjoint from extension separators",
+    memberName == "__TC_EXT_NS@physics@foo",
+    "namespace member mangling should use the readable literal path pattern",
+  );
+  assert(
+    getSourceNamespaceKeyListBackendName(["physics"]) == "__TC_EXT_NK@physics",
+    "namespace reflection key lists should use the same readable path pattern",
   );
 });
 
@@ -196,7 +218,7 @@ Deno.test("namespace member imports and nearest namespace scope resolve statical
   );
 });
 
-Deno.test("schema namespaces emit immediate dictionaries and support reflection", () => {
+Deno.test("schema namespaces emit key lists and direct source-path access", () => {
   const result = compileScripts([`
         namespace numbers {
             schema: num;
@@ -229,11 +251,11 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
   assert(
     startup.code.flat().some((block) => (
       block instanceof ActionBlock &&
-      block.action == "CreateDict" &&
+      block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
-      block.args[0].name == getSourceNamespaceDictionaryBackendName(["numbers"])
+      block.args[0].name == getSourceNamespaceKeyListBackendName(["numbers"])
     )),
-    "missing schema namespace dictionary initialization",
+    "missing schema namespace key-list initialization",
   );
   assert(
     startup.code.flat().some((block) => (
@@ -241,19 +263,20 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
       block.action == "CreateList" &&
       block.args.some((argument) => (
         argument instanceof StringValue &&
-        argument.value ==
-          getSourceNamespaceMemberBackendName(["numbers"], "one")
+        argument.value == "one"
       ))
     )),
-    "schema dictionary should contain backing variable names rather than copied values",
+    "schema key lists should contain member names rather than copied values",
   );
   const join =
     result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
   assert(
-    join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "GetDictKeys"
-    ),
-    "missing namespace.getKeys lowering",
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args.some(isSourceNamespaceKeyList)
+    )),
+    "namespace.getKeys should copy the namespace key list",
   );
   assert(
     join.code.flat().some((block) =>
@@ -263,7 +286,7 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
   );
   assert(
     join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "DictHasKey"
+      block instanceof ActionBlock && block.action == "ListContains"
     ),
     "missing namespace.has_member lowering",
   );
@@ -271,24 +294,26 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "=" &&
-      block.args.some(isDynamicVariableReference)
+      block.args.some(isDynamicSourceNamespaceReference)
     )),
-    "computed namespace reads and writes should dereference the stored variable name",
+    "computed namespace reads and writes should compose source paths directly",
   );
   const dynamicReferences = join.code.flat().flatMap((block) =>
     block instanceof ActionBlock ? block.args : []
-  ).filter(isDynamicVariableReference);
+  ).filter(isDynamicSourceNamespaceReference);
   assert(
     dynamicReferences.every((reference) =>
       reference.templateForm().data.name == renderedVariableName(reference)
     ),
-    "dynamic namespace references must serialize as %var(...) strings",
+    "dynamic source-path variables must serialize their PCode names",
   );
   assert(
-    join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "ForEachEntry"
-    ),
-    "schema namespace should be iterable as a dictionary",
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "ForEach" &&
+      block.args.some(isSourceNamespaceKeyList)
+    )),
+    "schema namespace should iterate its key list",
   );
   assert(
     join.code.flat().some((block) => (
@@ -296,15 +321,13 @@ Deno.test("schema namespaces emit immediate dictionaries and support reflection"
       block.action == "=" &&
       block.args[0] instanceof VariableValue &&
       renderedVariableName(block.args[0]) == "entryValue" &&
-      isDynamicVariableReference(block.args[1])
+      isDynamicSourceNamespaceReference(block.args[1])
     )),
-    "namespace iteration should dereference each backing variable name",
+    "namespace iteration should resolve each value through its source path",
   );
   assert(
-    !join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "SetDictValue"
-    ),
-    "namespace writes must not replace reference entries with copied values",
+    !join.code.flat().some(isDictionaryAction),
+    "namespace lowering must not emit dictionary actions",
   );
 });
 
@@ -363,7 +386,7 @@ Deno.test("namespace declarations are rejected from runtime code", () => {
   );
 });
 
-Deno.test("schema dictionaries exist before namespace variable initializers use dynamic calls", () => {
+Deno.test("schema key lists exist before namespace variable initializers", () => {
   const result = compileScripts([`
         namespace providers {
             schema: function() -> num;
@@ -385,24 +408,24 @@ Deno.test("schema dictionaries exist before namespace variable initializers use 
   );
   const startupCode = result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!
     .PlotStartup.code.flat();
-  const dictionaryIndex = startupCode.findIndex((block) => (
+  const keyListIndex = startupCode.findIndex((block) => (
     block instanceof ActionBlock &&
-    block.action == "CreateDict" &&
+    block.action == "CreateList" &&
     block.args[0] instanceof VariableValue &&
-    block.args[0].name == getSourceNamespaceDictionaryBackendName(["providers"])
+    block.args[0].name == getSourceNamespaceKeyListBackendName(["providers"])
   ));
   const callIndex = startupCode.findIndex((block) => (
     block instanceof ActionBlock &&
     block.block == DFCodeblockName.CALL_FUNCTION &&
-    block.action.startsWith("%var(@__TC_TMP_")
+    block.action == getSourceNamespaceMemberBackendName(["providers"], "answer")
   ));
   assert(
-    dictionaryIndex >= 0,
-    "missing function-schema dictionary initialization",
+    keyListIndex >= 0,
+    "missing function-schema key-list initialization",
   );
   assert(
-    callIndex > dictionaryIndex,
-    "dynamic namespace calls in initializers must run after dictionary setup",
+    callIndex > keyListIndex,
+    "namespace initializers must run after key-list setup",
   );
 });
 
@@ -443,13 +466,13 @@ Deno.test("namespace output survives the production optimizer", () => {
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "=" &&
-      block.args.some(isDynamicVariableReference)
+      block.args.some(isDynamicSourceNamespaceReference)
     )),
-    "optimizer must preserve dynamic references to namespace backing variables",
+    "optimizer must preserve dynamic source-path references",
   );
 });
 
-Deno.test("mixed namespace shapes retain value references and function selectors", () => {
+Deno.test("mixed namespace shapes retain direct values and function selectors", () => {
   const result = compileScripts([`
         namespace entity_type {
             schema: namespace {
@@ -484,43 +507,43 @@ Deno.test("mixed namespace shapes retain value references and function selectors
     startup.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
+      block.args[0] instanceof VariableValue &&
+      block.args[0].name ==
+        getSourceNamespaceKeyListBackendName(["entity_type"]) &&
       block.args.some((argument) => (
         argument instanceof StringValue &&
-        argument.value ==
-          getSourceNamespaceDictionaryBackendName(["entity_type", "zombie"])
+        argument.value == "zombie"
       ))
     )),
-    "parent dictionaries should store child dictionary variable names",
+    "parent key list should store child member names",
   );
   assert(
     startup.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
+      block.args[0] instanceof VariableValue &&
+      block.args[0].name ==
+        getSourceNamespaceKeyListBackendName(["entity_type", "zombie"]) &&
       block.args.some((argument) => (
         argument instanceof StringValue &&
-        argument.value ==
-          getSourceNamespaceMemberBackendName(
-            ["entity_type", "zombie"],
-            "hardness",
-          )
+        argument.value == "hardness"
       ))
     )),
-    "shape value fields should store backing variable names",
+    "shape key list should include value fields",
   );
   assert(
     startup.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
+      block.args[0] instanceof VariableValue &&
+      block.args[0].name ==
+        getSourceNamespaceKeyListBackendName(["entity_type", "zombie"]) &&
       block.args.some((argument) => (
         argument instanceof StringValue &&
-        argument.value ==
-          getSourceNamespaceMemberBackendName(
-            ["entity_type", "zombie"],
-            "on_spawn",
-          )
+        argument.value == "on_spawn"
       ))
     )),
-    "shape function fields should retain their dynamic call selectors",
+    "shape key list should include function fields",
   );
 
   const join =
@@ -531,13 +554,15 @@ Deno.test("mixed namespace shapes retain value references and function selectors
     block instanceof ActionBlock && block.action == "AppendValue"
   );
   assert(
-    appendedValues.some((block) => isDynamicVariableReference(block.args[1])),
-    "namespace.getValues must dereference shape value fields",
+    appendedValues.some((block) =>
+      isDynamicSourceNamespaceReference(block.args[1])
+    ),
+    "namespace.getValues must resolve shape value fields from their source paths",
   );
   assert(
     appendedValues.some((block) => (
-      block.args[1] instanceof VariableValue &&
-      !isDynamicVariableReference(block.args[1])
+      block.args[1] instanceof StringValue &&
+      block.args[1].toString().startsWith("__TC_EXT_NS@entity_type@%var(id)@")
     )),
     "namespace.getValues must leave function selectors as selector names",
   );
@@ -553,14 +578,183 @@ Deno.test("mixed namespace shapes retain value references and function selectors
     "mixed-shape iteration and reflection should branch on function fields",
   );
   assert(
-    !join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "SetDictValue"
-    ),
-    "shape writes must not replace dictionary references with copied values",
+    ![...startup.code.flat(), ...join.code.flat()].some(isDictionaryAction),
+    "shape lowering must not emit dictionary actions",
   );
 });
 
-Deno.test("namespace shape defaults and dynamic function dispatch compile through dictionaries", () => {
+Deno.test("nested schema reflection carries source paths instead of namespace values", () => {
+  const result = compileScripts([`
+        namespace child_schema {
+            schema: namespace {
+                scale: num;
+            };
+        }
+
+        namespace parents {
+            schema: namespace {
+                child: namespace child_schema;
+            };
+        }
+
+        namespace parents.one {
+            namespace child {
+                scale: num = 2;
+            }
+        }
+
+        import parents;
+        playerevent join {
+            line id = "one";
+            line values = namespace.getValues(parents[id]);
+            line childFromValues = values[1];
+            line directScale = childFromValues.scale;
+            line childKeys = namespace.getKeys(childFromValues);
+            for (line key, line child of parents[id]) {
+                line scale = child.scale;
+            }
+        }
+    `]);
+
+  const hardErrors = result.errors.filter((error) => !error.isWarning);
+  assert(
+    hardErrors.length == 0,
+    hardErrors.map((error) => error.message).join("\n"),
+  );
+  const join =
+    result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "AppendValue" &&
+      block.args[1] instanceof StringValue &&
+      block.args[1].toString().startsWith("parents@%var(id)@%var(")
+    )),
+    "namespace.getValues should expose nested namespaces as source paths",
+  );
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args[0] instanceof VariableValue &&
+      renderedVariableName(block.args[0]) == "child" &&
+      block.args[1] instanceof StringValue &&
+      block.args[1].toString().startsWith("parents@%var(id)@%var(key)")
+    )),
+    "namespace iteration should assign nested source paths to its value variable",
+  );
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args.some((argument) => (
+        isDynamicSourceNamespaceReference(argument) &&
+        renderedVariableName(argument) == "__TC_EXT_NS@%var(child)@scale"
+      ))
+    )),
+    "nested reflected sources should remain usable for subsequent member access",
+  );
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args.some((argument) => (
+        isDynamicSourceNamespaceReference(argument) &&
+        renderedVariableName(argument) ==
+          "__TC_EXT_NS@%var(childFromValues)@scale"
+      ))
+    )),
+    "nested namespace sources returned by getValues should remain usable",
+  );
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args.some((argument) => (
+        isSourceNamespaceKeyList(argument) &&
+        renderedVariableName(argument) == "__TC_EXT_NK@%var(childFromValues)"
+      ))
+    )),
+    "reflection should resolve a nested namespace's key list from its source path",
+  );
+});
+
+Deno.test("mixed reflection distinguishes values, selectors, and nested sources", () => {
+  const result = compileScripts([`
+        namespace child_schema {
+            schema: namespace {
+                scale: num;
+            };
+        }
+
+        namespace entry {
+            schema: namespace {
+                amount: num;
+                function trigger() -> void;
+                child: namespace child_schema;
+            };
+        }
+
+        namespace entry.one {
+            amount: num = 1;
+            function trigger() {}
+            namespace child {
+                scale: num = 2;
+            }
+        }
+
+        import entry;
+        playerevent join {
+            line id = "one";
+            line values = namespace.getValues(entry[id]);
+            for (line key, line value of entry[id]) {}
+        }
+    `]);
+
+  const hardErrors = result.errors.filter((error) => !error.isWarning);
+  assert(
+    hardErrors.length == 0,
+    hardErrors.map((error) => error.message).join("\n"),
+  );
+  const join =
+    result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
+  const appended = join.code.flat().filter((block): block is ActionBlock =>
+    block instanceof ActionBlock && block.action == "AppendValue"
+  );
+  assert(
+    appended.some((block) => isDynamicSourceNamespaceReference(block.args[1])),
+    "mixed reflection should dereference ordinary value members",
+  );
+  assert(
+    appended.some((block) => (
+      block.args[1] instanceof StringValue &&
+      block.args[1].toString().startsWith("__TC_EXT_NS@entry@%var(id)@")
+    )),
+    "mixed reflection should emit function selectors",
+  );
+  assert(
+    appended.some((block) => (
+      block.args[1] instanceof StringValue &&
+      block.args[1].toString().startsWith("entry@%var(id)@")
+    )),
+    "mixed reflection should emit nested namespace sources",
+  );
+  for (const member of ["trigger", "child"]) {
+    assert(
+      join.code.flat().some((block) => (
+        block instanceof ActionBlock &&
+        block.block == DFCodeblockName.IF_VARIABLE &&
+        block.action == "=" &&
+        block.args.some((argument) =>
+          argument instanceof StringValue && argument.value == member
+        )
+      )),
+      `mixed reflection should branch for '${member}'`,
+    );
+  }
+});
+
+Deno.test("namespace shape defaults and dynamic function dispatch use source paths", () => {
   const result = compileScripts([`
         namespace render_config {
             schema: namespace {
@@ -617,45 +811,49 @@ Deno.test("namespace shape defaults and dynamic function dispatch compile throug
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.block == DFCodeblockName.CALL_FUNCTION &&
-      block.action.startsWith("%var(@__TC_TMP_")
+      block.action.startsWith("__TC_EXT_NS@entity_type@%var(id)@on_spawn")
     )),
     "missing dynamic namespace Call Function lowering",
   );
   assert(
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
-      block.action == "GetDictKeys"
+      block.action == "=" &&
+      block.args.some((argument) => (
+        isSourceNamespaceKeyList(argument) &&
+        renderedVariableName(argument).includes("entity_type@%var(id)")
+      ))
     )),
     "dynamic schema children should support namespace reflection",
   );
   const startup =
     result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
-  const dictionaryTargets = startup.code.flat()
+  const keyListTargets = startup.code.flat()
     .filter((block): block is ActionBlock =>
-      block instanceof ActionBlock && block.action == "CreateDict"
+      block instanceof ActionBlock && block.action == "CreateList"
     )
     .map((block) => block.args[0])
     .filter((value): value is VariableValue => value instanceof VariableValue)
-    .map((value) => value.name);
+    .map(renderedVariableName);
   assert(
-    dictionaryTargets.includes(
-      getSourceNamespaceDictionaryBackendName(["entity_type", "zombie"]),
+    keyListTargets.includes(
+      getSourceNamespaceKeyListBackendName(["entity_type", "zombie"]),
     ),
-    "missing conforming namespace dictionary",
+    "missing conforming namespace key list",
   );
   assert(
-    dictionaryTargets.includes(
-      getSourceNamespaceDictionaryBackendName(["handlers"]),
+    keyListTargets.includes(
+      getSourceNamespaceKeyListBackendName(["handlers"]),
     ),
-    "missing function schema dictionary",
+    "missing function schema key list",
   );
   assert(
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "=" &&
-      block.args.some(isDynamicVariableReference)
+      block.args.some(isDynamicSourceNamespaceReference)
     )),
-    "dynamic nested writes should target the dereferenced child backing variable",
+    "dynamic nested writes should target the composed backing-variable source",
   );
 });
 
@@ -689,7 +887,7 @@ Deno.test("homogeneous process schemas require start and dispatch through Start 
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.block == DFCodeblockName.START_PROCESS &&
-      block.action.startsWith("%var(@__TC_TMP_")
+      block.action.startsWith("__TC_EXT_NS@workers@%var(selected)")
     )),
     "missing dynamic namespace Start Process lowering",
   );
@@ -738,7 +936,7 @@ Deno.test("mixed function/process schemas dispatch according to call syntax", ()
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.block == DFCodeblockName.CALL_FUNCTION &&
-      block.action.startsWith("%var(@__TC_TMP_")
+      block.action.startsWith("__TC_EXT_NS@handlers@%var(selected)")
     )),
     "ordinary mixed-schema calls should dynamically Call Function",
   );
@@ -746,7 +944,7 @@ Deno.test("mixed function/process schemas dispatch according to call syntax", ()
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.block == DFCodeblockName.START_PROCESS &&
-      block.action.startsWith("%var(@__TC_TMP_")
+      block.action.startsWith("__TC_EXT_NS@handlers@%var(selected)")
     )),
     "start mixed-schema calls should dynamically Start Process",
   );
@@ -847,12 +1045,12 @@ Deno.test("namespace defaults materialize nested namespaces before imports resol
   assert(
     startup.code.flat().some((block) => (
       block instanceof ActionBlock &&
-      block.action == "CreateDict" &&
+      block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
       block.args[0].name ==
-        getSourceNamespaceDictionaryBackendName(["entities", "box", "render"])
+        getSourceNamespaceKeyListBackendName(["entities", "box", "render"])
     )),
-    "missing dictionary for generated default namespace",
+    "missing key list for generated default namespace",
   );
 });
 
@@ -996,14 +1194,12 @@ Deno.test("unqualified namespace-variable writes update only their backing varia
     "unqualified namespace variable write did not update the backing global variable",
   );
   assert(
-    !bump.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "SetDictValue"
-    ),
-    "direct namespace writes must not overwrite dictionary reference entries",
+    !bump.code.flat().some(isDictionaryAction),
+    "direct namespace writes must not require dictionary updates",
   );
 });
 
-Deno.test("partial nested defaults and chained dynamic namespace access preserve immediate dictionaries", () => {
+Deno.test("partial nested defaults and chained dynamic namespace access compose paths", () => {
   const result = compileScripts([`
         namespace render_config {
             schema: namespace {
@@ -1052,11 +1248,11 @@ Deno.test("partial nested defaults and chained dynamic namespace access preserve
   assert(
     startup.code.flat().some((block) => (
       block instanceof ActionBlock &&
-      block.action == "CreateDict" &&
+      block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
-      block.args[0].name == getSourceNamespaceDictionaryBackendName(renderPath)
+      block.args[0].name == getSourceNamespaceKeyListBackendName(renderPath)
     )),
-    "partial default did not materialize its nested namespace dictionary",
+    "partial default did not materialize its nested namespace key list",
   );
   assert(
     startup.code.flat().some((block) => (
@@ -1072,24 +1268,28 @@ Deno.test("partial nested defaults and chained dynamic namespace access preserve
   const join =
     result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
   assert(
-    join.code.flat().filter((block) =>
-      block instanceof ActionBlock && block.action == "GetDictValue"
-    ).length >= 3,
-    "chained dynamic namespace access did not emit sequential dictionary reads",
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.args.some((argument) => (
+        isDynamicSourceNamespaceReference(argument) &&
+        renderedVariableName(argument).includes(
+          "entity_type@%var(type_id)@%var(member)@scale",
+        )
+      ))
+    )),
+    "chained dynamic namespace access did not compose one backing-variable path",
   );
   assert(
     join.code.flat().some((block) => (
       block instanceof ActionBlock &&
       block.action == "=" &&
-      block.args.some(isDynamicVariableReference)
+      block.args.some(isDynamicSourceNamespaceReference)
     )),
-    "chained dynamic namespace writes did not target backing variables",
+    "chained dynamic namespace writes did not target backing variables directly",
   );
   assert(
-    !join.code.flat().some((block) =>
-      block instanceof ActionBlock && block.action == "SetDictValue"
-    ),
-    "chained writes must not copy a changed child back into a namespace dictionary",
+    ![...startup.code.flat(), ...join.code.flat()].some(isDictionaryAction),
+    "chained namespace lowering must not copy values through dictionaries",
   );
 
   const bump = result.compiler.codeLines.get(DFCodeblockName.FUNCTION)![
