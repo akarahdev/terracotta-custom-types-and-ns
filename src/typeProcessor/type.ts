@@ -278,7 +278,16 @@ export class Type {
         }
     );
 
-    public static alias(name: string, baseType: Type): Type {
+    /**
+     * Builds an alias type wrapping `baseType`. If `target` is provided (a placeholder
+     * created by `Type.forwardDeclare`), it is mutated in-place to become the alias instead
+     * of a new Type being constructed. Mutating in place (rather than replacing the
+     * reference) is what lets forward/self/mutually-referencing custom types work: anything
+     * that already holds a reference to the placeholder (including `baseType` itself, for a
+     * self-referencing type) transparently starts seeing the real alias behavior once this
+     * runs, without needing to be revisited.
+     */
+    public static alias(name: string, baseType: Type, target?: Type): Type {
         let getMemberType = (m?: string | number) => baseType.getMemberType(m);
         let getMembers = () => baseType.getMembers();
         let getProperties = () => {
@@ -303,27 +312,48 @@ export class Type {
             if (to.matches(Type.any) || to.name == name) return true;
             return baseType.isAssignableTo(to);
         }
+        let stringify = () => name;
+
+        let type = target ?? new Type(name);
+        type.getMemberType = getMemberType;
+        type.getMembers = getMembers;
+        type.getProperties = getProperties;
+        type.getPropertyType = getPropertyType;
+        type.getPropertyDefinition = getPropertyDefinition;
+        type.strictlyMatches = strictMatchCallback;
+        type.isAssignableTo = assignabilityCallback;
+        type.toString = stringify;
+        type[Symbol.toPrimitive] = stringify;
+        type.data = {baseType};
+        return type;
+    }
+
+    /**
+     * Registers a placeholder Type for a custom type name before its body has been
+     * evaluated. Other types can safely hold a reference to this placeholder (e.g. by
+     * appearing as a field type in a dictionary/list type, or by being the base type of
+     * another alias) -- once `Type.alias(name, baseType, placeholder)` is later called to
+     * resolve it, every existing reference picks up the real behavior automatically, since
+     * the same object identity is preserved.
+     */
+    public static forwardDeclare(name: string): Type {
         return new Type(name, {
-            getMemberType,
-            getMembers,
-            getProperties,
-            getPropertyType,
-            getPropertyDefinition,
-            strictMatchCallback,
-            assignabilityCallback,
             stringify: () => name,
-            data: {baseType},
         });
     }
 
     public readonly assignable: boolean;
-    public readonly getMemberType = (m?: string | number) => Type.unknown;
+    // NOTE: these are intentionally NOT readonly (despite being set up as if they were) --
+    // `Type.alias` mutates them in-place on existing Type objects to resolve forward-declared
+    // custom types (see `Type.forwardDeclare`), so they need to stay reassignable after
+    // construction.
+    public getMemberType = (m?: string | number) => Type.unknown;
     /** Returns a `string[]` containing all member names, or `null` if this type does not allow property access */
-    public readonly getMembers: () => (string[] | null) = () => null;
+    public getMembers: () => (string[] | null) = () => null;
     
     // default behavior: grab methodable functions from this type's namespace, if applicable
     // also grab property definitions that apply to values
-    public readonly getProperties = (): (string[] | null) => {
+    public getProperties = (): (string[] | null) => {
         const namespace = TYPE_NAMESPACES[this.name];
         if (!namespace) return null;
         let props: string[] = [];
@@ -337,17 +367,17 @@ export class Type {
         }
         return props;
     };
-    public readonly getPropertyType = (p: string) => {
+    public getPropertyType = (p: string) => {
         let namespace = TYPE_NAMESPACES[this.name];
         if (!namespace) return Type.void;
         if (!(p in namespace.members)) return Type.void;
         return getNamespaceMemberType(namespace, p);
     };
-    public readonly getPropertyDefinition = (p: string): Definition | null => {
+    public getPropertyDefinition = (p: string): Definition | null => {
         return TYPE_NAMESPACES[this.name]?.members[p] ?? null
     }
 
-    public readonly data: TypeExtraData
+    public data: TypeExtraData
 
     constructor(
         public readonly name: string,

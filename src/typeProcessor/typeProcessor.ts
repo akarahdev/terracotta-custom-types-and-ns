@@ -470,29 +470,51 @@ export class TypeProcessor {
         // TODO: handle var.equals() block
     }
 
-    applyStatementVariables(statement: Statement, frame: EnvironmentFrame) { 
-        if (statement instanceof TypeStatement) {
-            if (!(frame.astNode instanceof RootNode)) {
-                this.reportError(statement.keyword, `Type declarations can only appear at the top level of a file`);
-                return;
-            }
-            let name = statement.name.value;
-            if (name in Type || name in CUSTOM_TYPES || name in Namespace.registry) {
-                this.reportError(statement.name, `Type '${name}' is already defined`);
-                return;
-            }
-            let baseType = this.evaluateExplicitType(statement.assignedType.type, {reportErrors: true});
-            if (baseType.matches(Type.unknown) || baseType.matches(Type.void) || baseType.matches(Type.var) || baseType.matches(Type.func) || baseType.matches(Type.namespace)) {
-                this.reportError(statement.assignedType.type, `Type '${baseType}' cannot be used as a custom type base`);
-                return;
-            }
-            let customType = Type.alias(name, baseType);
-            CUSTOM_TYPES[name] = customType;
-            Type.assignableTypes.add(name);
-            TYPE_NAMESPACES[name] = new Namespace(name);
+    /**
+     * Phase 1 of type declaration processing (see `collectionStage`'s cross-file pre-pass):
+     * registers a placeholder for this type's name so that any other type declaration --
+     * in this file, in any other file, or this declaration itself -- can reference it by
+     * name regardless of declaration order. The placeholder is later resolved in-place by
+     * `resolveTypeBody` once every file's type names have been registered.
+     */
+    registerTypeName(statement: TypeStatement, frame: EnvironmentFrame) {
+        if (!(frame.astNode instanceof RootNode)) {
+            this.reportError(statement.keyword, `Type declarations can only appear at the top level of a file`);
             return;
         }
-        else if (statement instanceof ExtendStatement) {
+        let name = statement.name.value;
+        if (name in Type || name in CUSTOM_TYPES || name in Namespace.registry) {
+            this.reportError(statement.name, `Type '${name}' is already defined`);
+            return;
+        }
+        CUSTOM_TYPES[name] = Type.forwardDeclare(name);
+        Type.assignableTypes.add(name);
+        TYPE_NAMESPACES[name] = new Namespace(name);
+    }
+
+    /**
+     * Phase 2 of type declaration processing: now that every file's type names have a
+     * placeholder registered (via `registerTypeName`), it's safe to actually evaluate this
+     * type's base type expression -- forward references, references to types in other
+     * files, and self-references all just resolve to the placeholder, which this then
+     * resolves in-place into the real type.
+     */
+    resolveTypeBody(statement: TypeStatement) {
+        let name = statement.name.value;
+        let shell = CUSTOM_TYPES[name];
+        // no shell means registerTypeName already reported an error for this statement
+        if (!shell) return;
+
+        let baseType = this.evaluateExplicitType(statement.assignedType.type, {reportErrors: true});
+        if (baseType.matches(Type.unknown) || baseType.matches(Type.void) || baseType.matches(Type.var) || baseType.matches(Type.func) || baseType.matches(Type.namespace)) {
+            this.reportError(statement.assignedType.type, `Type '${baseType}' cannot be used as a custom type base`);
+            return;
+        }
+        Type.alias(name, baseType, shell);
+    }
+
+    applyStatementVariables(statement: Statement, frame: EnvironmentFrame) { 
+        if (statement instanceof ExtendStatement) {
             let targetType = this.evaluateExplicitType(statement.type, {reportErrors: true});
             if (targetType.matches(Type.unknown) || targetType.matches(Type.void) || targetType.matches(Type.var) || targetType.matches(Type.func) || targetType.matches(Type.namespace)) {
                 this.reportError(statement.type, `Type '${targetType}' cannot be extended`);
@@ -686,12 +708,26 @@ export class TypeProcessor {
         if (statements.length > 0 && statements.every(s => s instanceof RootNode)) {
             let roots = statements as RootNode[];
             let rootFrames: EnvironmentFrame[] = [];
+            // Phase 1: walk every file and register a placeholder for every top-level type
+            // name, before evaluating any type's body. This is what makes type references
+            // order-independent -- a type can reference another type declared later in the
+            // same file, in a different file, or even reference itself, since by the time
+            // any type body is evaluated in phase 2 below, every type name across every file
+            // already resolves to *some* Type object.
             for (const root of roots) {
                 let rootFrame = this.framesByASTNode.get(root) ?? defaultFrame.addChild(root);
                 this.framesByASTNode.set(root, rootFrame);
                 rootFrames.push(rootFrame);
                 for (const statement of root.statements) {
-                    if (statement instanceof TypeStatement) this.applyStatementVariables(statement, rootFrame);
+                    if (statement instanceof TypeStatement) this.registerTypeName(statement, rootFrame);
+                }
+            }
+            // Phase 2: now that every type name (from every file) has a placeholder
+            // registered, actually evaluate each type's body and resolve its placeholder,
+            // in-place, into the real type.
+            for (const root of roots) {
+                for (const statement of root.statements) {
+                    if (statement instanceof TypeStatement) this.resolveTypeBody(statement);
                 }
             }
             for (let i = 0; i < roots.length; i++) {
