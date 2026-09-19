@@ -1947,40 +1947,49 @@ export class TypeProcessor {
     // TODO: handle var.equals() block
   }
 
-  applyStatementVariables(statement: Statement, frame: EnvironmentFrame) {
-    if (statement instanceof TypeStatement) {
-      if (!(frame.astNode instanceof RootNode)) {
-        this.reportError(
-          statement.keyword,
-          `Type declarations can only appear at the top level of a file`,
-        );
-        return;
-      }
-      let name = statement.name.value;
-      if (name in Type || name in CUSTOM_TYPES || name in Namespace.registry) {
-        this.reportError(statement.name, `Type '${name}' is already defined`);
-        return;
-      }
-      let baseType = this.evaluateExplicitType(statement.assignedType.type, {
-        reportErrors: true,
-      });
-      if (
-        baseType.matches(Type.unknown) || baseType.matches(Type.void) ||
-        baseType.matches(Type.var) || baseType.matches(Type.func) ||
-        baseType.matches(Type.namespace)
-      ) {
-        this.reportError(
-          statement.assignedType.type,
-          `Type '${baseType}' cannot be used as a custom type base`,
-        );
-        return;
-      }
-      let customType = Type.alias(name, baseType);
-      CUSTOM_TYPES[name] = customType;
-      Type.assignableTypes.add(name);
-      TYPE_NAMESPACES[name] = new Namespace(name);
+  /** Registers a placeholder for a top-level custom type before body resolution. */
+  registerTypeName(statement: TypeStatement, frame: EnvironmentFrame) {
+    if (!(frame.astNode instanceof RootNode)) {
+      this.reportError(
+        statement.keyword,
+        `Type declarations can only appear at the top level of a file`,
+      );
       return;
-    } else if (statement instanceof ExtendStatement) {
+    }
+    let name = statement.name.value;
+    if (name in Type || name in CUSTOM_TYPES || name in Namespace.registry) {
+      this.reportError(statement.name, `Type '${name}' is already defined`);
+      return;
+    }
+    CUSTOM_TYPES[name] = Type.forwardDeclare(name);
+    Type.assignableTypes.add(name);
+    TYPE_NAMESPACES[name] = new Namespace(name);
+  }
+
+  /** Resolves a registered type placeholder after every file's names are known. */
+  resolveTypeBody(statement: TypeStatement) {
+    let name = statement.name.value;
+    let shell = CUSTOM_TYPES[name];
+    if (!shell) return;
+    let baseType = this.evaluateExplicitType(statement.assignedType.type, {
+      reportErrors: true,
+    });
+    if (
+      baseType.matches(Type.unknown) || baseType.matches(Type.void) ||
+      baseType.matches(Type.var) || baseType.matches(Type.func) ||
+      baseType.matches(Type.namespace)
+    ) {
+      this.reportError(
+        statement.assignedType.type,
+        `Type '${baseType}' cannot be used as a custom type base`,
+      );
+      return;
+    }
+    Type.alias(name, baseType, shell);
+  }
+
+  applyStatementVariables(statement: Statement, frame: EnvironmentFrame) {
+    if (statement instanceof ExtendStatement) {
       let targetType = this.evaluateExplicitType(statement.type, {
         reportErrors: true,
       });
@@ -2249,6 +2258,8 @@ export class TypeProcessor {
     ) {
       let roots = statements as RootNode[];
       let rootFrames: EnvironmentFrame[] = [];
+      // Register all names before resolving any base types, so references are
+      // independent of declaration and file order.
       for (const root of roots) {
         let rootFrame = this.framesByASTNode.get(root) ??
           defaultFrame.addChild(root);
@@ -2256,7 +2267,14 @@ export class TypeProcessor {
         rootFrames.push(rootFrame);
         for (const statement of root.statements) {
           if (statement instanceof TypeStatement) {
-            this.applyStatementVariables(statement, rootFrame);
+            this.registerTypeName(statement, rootFrame);
+          }
+        }
+      }
+      for (const root of roots) {
+        for (const statement of root.statements) {
+          if (statement instanceof TypeStatement) {
+            this.resolveTypeBody(statement);
           }
         }
       }

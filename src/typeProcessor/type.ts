@@ -296,7 +296,8 @@ export class Type {
         }
     );
 
-    public static alias(name: string, baseType: Type): Type {
+    /** Resolves an optional forward-declared custom-type placeholder in place. */
+    public static alias(name: string, baseType: Type, target?: Type): Type {
         let getMemberType = (m?: string | number) => baseType.getMemberType(m);
         let getMembers = () => baseType.getMembers();
         let getProperties = () => {
@@ -321,27 +322,34 @@ export class Type {
             if (to.matches(Type.any) || to.name == name) return true;
             return baseType.isAssignableTo(to);
         }
-        return new Type(name, {
-            getMemberType,
-            getMembers,
-            getProperties,
-            getPropertyType,
-            getPropertyDefinition,
-            strictMatchCallback,
-            assignabilityCallback,
-            stringify: () => name,
-            data: {baseType},
-        });
+        let stringify = () => name;
+        let type = target ?? new Type(name);
+        type.getMemberType = getMemberType;
+        type.getMembers = getMembers;
+        type.getProperties = getProperties;
+        type.getPropertyType = getPropertyType;
+        type.getPropertyDefinition = getPropertyDefinition;
+        type.strictlyMatches = strictMatchCallback;
+        type.isAssignableTo = assignabilityCallback;
+        type.toString = stringify;
+        type[Symbol.toPrimitive] = stringify;
+        type.data = {baseType};
+        return type;
+    }
+
+    /** Registers a stable placeholder used while custom type bodies are resolved. */
+    public static forwardDeclare(name: string): Type {
+        return new Type(name, {stringify: () => name});
     }
 
     public readonly assignable: boolean;
-    public readonly getMemberType = (m?: string | number) => Type.unknown;
+    public getMemberType = (m?: string | number) => Type.unknown;
     /** Returns a `string[]` containing all member names, or `null` if this type does not allow property access */
-    public readonly getMembers: () => (string[] | null) = () => null;
+    public getMembers: () => (string[] | null) = () => null;
     
     // default behavior: grab methodable functions from this type's namespace, if applicable
     // also grab property definitions that apply to values
-    public readonly getProperties = (): (string[] | null) => {
+    public getProperties = (): (string[] | null) => {
         const namespace = TYPE_NAMESPACES[this.name];
         if (!namespace) return null;
         let props: string[] = [];
@@ -355,17 +363,17 @@ export class Type {
         }
         return props;
     };
-    public readonly getPropertyType = (p: string) => {
+    public getPropertyType = (p: string) => {
         let namespace = TYPE_NAMESPACES[this.name];
         if (!namespace) return Type.void;
         if (!(p in namespace.members)) return Type.void;
         return getNamespaceMemberType(namespace, p);
     };
-    public readonly getPropertyDefinition = (p: string): Definition | null => {
+    public getPropertyDefinition = (p: string): Definition | null => {
         return TYPE_NAMESPACES[this.name]?.members[p] ?? null
     }
 
-    public readonly data: TypeExtraData
+    public data: TypeExtraData
     private runtimeTypeCallback: (() => Type) | null = null;
 
     constructor(
