@@ -158,6 +158,8 @@ export type UserMethodType = DFCodeblockName.FUNCTION | DFCodeblockName.PROCESS;
 
 export type HeaderType = EventType | UserMethodType;
 
+const SOURCE_NAMESPACE_RELOAD_FUNCTION_NAME = `${TC_HEADER}NS_RELOAD`;
+
 export type CompliationEnvironment = {
   types: TypeProcessor;
   rank: DFRank;
@@ -3372,8 +3374,8 @@ export class CodeCompiler {
     return flattened;
   }
 
-  /** Emits namespace variable initializers after runtime key lists are ready. */
-  private compileSourceNamespaceInitializers() {
+  /** Compiles namespace variable initializers after runtime key lists are ready. */
+  private compileSourceNamespaceInitializers(): CodeBlock[] {
     let initializerCode: CodeBlock[] = [];
     for (const definition of this.env.types.sourceNamespaceVariables) {
       if (definition.initializer == null) continue;
@@ -3396,11 +3398,7 @@ export class CodeCompiler {
         ...definition.compileSet(value, this.getEvaluationContext()),
       );
     }
-    if (initializerCode.length > 0) {
-      this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(
-        initializerCode,
-      );
-    }
+    return initializerCode;
   }
 
   private getSourceNamespaceDiagnosticNode(
@@ -3499,8 +3497,8 @@ export class CodeCompiler {
     return members;
   }
 
-  /** Each schema namespace gets an immediate-member reflection key list. */
-  private compileSourceNamespaceKeyLists() {
+  /** Compiles immediate-member reflection key lists for schema namespaces. */
+  private compileSourceNamespaceKeyLists(): CodeBlock[] {
     let keyListCode: CodeBlock[] = [];
     let namespaces = [...this.env.types.sourceNamespaces]
       .filter((namespace) => namespace.runtimeBacked)
@@ -3529,11 +3527,36 @@ export class CodeCompiler {
         ),
       );
     }
-    if (keyListCode.length > 0) {
-      this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push(
-        keyListCode,
-      );
-    }
+    return keyListCode;
+  }
+
+  /** Ensures the generated namespace setup function exists and returns its name. */
+  public ensureSourceNamespaceReloadFunction(): string {
+    this.getLineEntry(
+      DFCodeblockName.FUNCTION,
+      SOURCE_NAMESPACE_RELOAD_FUNCTION_NAME,
+    );
+    return SOURCE_NAMESPACE_RELOAD_FUNCTION_NAME;
+  }
+
+  /** Emits source namespace setup once, then invokes it from plot startup. */
+  private compileSourceNamespaceReloadFunction() {
+    let keyListCode = this.compileSourceNamespaceKeyLists();
+    let initializerCode = this.compileSourceNamespaceInitializers();
+    if (keyListCode.length == 0 && initializerCode.length == 0) return;
+
+    let reloadFunctionName = this.ensureSourceNamespaceReloadFunction();
+    let reloadFunction = this.getLineEntry(
+      DFCodeblockName.FUNCTION,
+      reloadFunctionName,
+    );
+    reloadFunction.code.push(keyListCode, initializerCode);
+
+    this.getLineEntry(DFCodeblockName.GAME_EVENT, "PlotStartup").code.push([
+      new ActionBlock(DFCodeblockName.CALL_FUNCTION, {
+        action: reloadFunctionName,
+      }),
+    ]);
   }
 
   compile(
@@ -3545,8 +3568,7 @@ export class CodeCompiler {
     let declarationsToCompile = this.processLineDeclarations(
       this.getCompilableTopLevelStatements(),
     );
-    this.compileSourceNamespaceKeyLists();
-    this.compileSourceNamespaceInitializers();
+    this.compileSourceNamespaceReloadFunction();
 
     for (const [lineEntry, declaration] of declarationsToCompile) {
       this.tempVarProvider.resetCount();

@@ -80,6 +80,33 @@ function compileScripts(
   };
 }
 
+function getNamespaceReloadFunction(compiler: CodeCompiler) {
+  const reloadFunctionName = compiler.ensureSourceNamespaceReloadFunction();
+  const reloadFunction = compiler.codeLines.get(DFCodeblockName.FUNCTION)?.[
+    reloadFunctionName
+  ];
+  assert(
+    reloadFunction != undefined,
+    "missing generated namespace reload function",
+  );
+  return reloadFunction;
+}
+
+function assertNamespaceReloadRunsAtStartup(compiler: CodeCompiler) {
+  const reloadFunctionName = compiler.ensureSourceNamespaceReloadFunction();
+  const startup = compiler.codeLines.get(DFCodeblockName.GAME_EVENT)
+    ?.PlotStartup;
+  assert(startup != undefined, "missing PlotStartup namespace reload call");
+  assert(
+    startup.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.block == DFCodeblockName.CALL_FUNCTION &&
+      block.action == reloadFunctionName
+    )),
+    "PlotStartup should call the generated namespace reload function",
+  );
+}
+
 Deno.test("source namespaces merge across files and use extension-family mangling", () => {
   const result = compileScripts([
     `
@@ -134,18 +161,18 @@ Deno.test("source namespaces merge across files and use extension-family manglin
     "missing relative dotted namespace function",
   );
 
-  const startup =
-    result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
-  const initializer = startup.code.flat().find((block) => (
-    block instanceof ActionBlock &&
-    block.action == "=" &&
-    block.args[0] instanceof VariableValue &&
-    block.args[0].name ==
-      getSourceNamespaceMemberBackendName(["physics"], "gravity")
-  ));
+  assertNamespaceReloadRunsAtStartup(result.compiler);
+  const initializer = getNamespaceReloadFunction(result.compiler).code.flat()
+    .find((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args[0] instanceof VariableValue &&
+      block.args[0].name ==
+        getSourceNamespaceMemberBackendName(["physics"], "gravity")
+    ));
   assert(
     initializer != undefined,
-    "namespace variable was not initialized at PlotStartup",
+    "namespace variable was not initialized by the generated reload function",
   );
   const join =
     result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
@@ -158,6 +185,50 @@ Deno.test("source namespaces merge across files and use extension-family manglin
         getSourceNamespaceMemberBackendName(["physics"], "gravity")
     )),
     "static writes should work through compile-time-only namespaces",
+  );
+});
+
+Deno.test("namespace.reload calls the generated namespace setup function", () => {
+  const result = compileScripts([`
+        namespace state {
+            value: num = 1;
+        }
+
+        import state;
+        playerevent join {
+            state.value = 2;
+            namespace.reload();
+        }
+    `]);
+
+  const hardErrors = result.errors.filter((error) => !error.isWarning);
+  assert(
+    hardErrors.length == 0,
+    hardErrors.map((error) => error.message).join("\n"),
+  );
+
+  const reloadFunctionName = result.compiler
+    .ensureSourceNamespaceReloadFunction();
+  assertNamespaceReloadRunsAtStartup(result.compiler);
+  assert(
+    getNamespaceReloadFunction(result.compiler).code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.action == "=" &&
+      block.args[0] instanceof VariableValue &&
+      block.args[0].name ==
+        getSourceNamespaceMemberBackendName(["state"], "value")
+    )),
+    "generated namespace reload function should restore declared values",
+  );
+  const join =
+    result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
+  assert(
+    join.code.flat().some((block) => (
+      block instanceof ActionBlock &&
+      block.block == DFCodeblockName.CALL_FUNCTION &&
+      block.action == reloadFunctionName
+    )),
+    "namespace.reload should call the generated namespace reload function",
   );
 });
 
@@ -246,10 +317,9 @@ Deno.test("schema namespaces emit key lists and direct source-path access", () =
     hardErrors.length == 0,
     hardErrors.map((error) => error.message).join("\n"),
   );
-  const startup =
-    result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
+  const reloadCode = getNamespaceReloadFunction(result.compiler).code.flat();
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
@@ -258,7 +328,7 @@ Deno.test("schema namespaces emit key lists and direct source-path access", () =
     "missing schema namespace key-list initialization",
   );
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
       block.args.some((argument) => (
@@ -406,15 +476,14 @@ Deno.test("schema key lists exist before namespace variable initializers", () =>
     hardErrors.length == 0,
     hardErrors.map((error) => error.message).join("\n"),
   );
-  const startupCode = result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!
-    .PlotStartup.code.flat();
-  const keyListIndex = startupCode.findIndex((block) => (
+  const reloadCode = getNamespaceReloadFunction(result.compiler).code.flat();
+  const keyListIndex = reloadCode.findIndex((block) => (
     block instanceof ActionBlock &&
     block.action == "CreateList" &&
     block.args[0] instanceof VariableValue &&
     block.args[0].name == getSourceNamespaceKeyListBackendName(["providers"])
   ));
-  const callIndex = startupCode.findIndex((block) => (
+  const callIndex = reloadCode.findIndex((block) => (
     block instanceof ActionBlock &&
     block.block == DFCodeblockName.CALL_FUNCTION &&
     block.action == getSourceNamespaceMemberBackendName(["providers"], "answer")
@@ -501,10 +570,9 @@ Deno.test("mixed namespace shapes retain direct values and function selectors", 
     hardErrors.length == 0,
     hardErrors.map((error) => error.message).join("\n"),
   );
-  const startup =
-    result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
+  const reloadCode = getNamespaceReloadFunction(result.compiler).code.flat();
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
@@ -518,7 +586,7 @@ Deno.test("mixed namespace shapes retain direct values and function selectors", 
     "parent key list should store child member names",
   );
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
@@ -532,7 +600,7 @@ Deno.test("mixed namespace shapes retain direct values and function selectors", 
     "shape key list should include value fields",
   );
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
@@ -578,7 +646,7 @@ Deno.test("mixed namespace shapes retain direct values and function selectors", 
     "mixed-shape iteration and reflection should branch on function fields",
   );
   assert(
-    ![...startup.code.flat(), ...join.code.flat()].some(isDictionaryAction),
+    ![...reloadCode, ...join.code.flat()].some(isDictionaryAction),
     "shape lowering must not emit dictionary actions",
   );
 });
@@ -826,9 +894,7 @@ Deno.test("namespace shape defaults and dynamic function dispatch use source pat
     )),
     "dynamic schema children should support namespace reflection",
   );
-  const startup =
-    result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
-  const keyListTargets = startup.code.flat()
+  const keyListTargets = getNamespaceReloadFunction(result.compiler).code.flat()
     .filter((block): block is ActionBlock =>
       block instanceof ActionBlock && block.action == "CreateList"
     )
@@ -1040,10 +1106,9 @@ Deno.test("namespace defaults materialize nested namespaces before imports resol
     hardErrors.length == 0,
     hardErrors.map((error) => error.message).join("\n"),
   );
-  const startup =
-    result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
+  const reloadCode = getNamespaceReloadFunction(result.compiler).code.flat();
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
@@ -1243,10 +1308,9 @@ Deno.test("partial nested defaults and chained dynamic namespace access compose 
   );
 
   const renderPath = ["entity_type", "zombie", "render"];
-  const startup =
-    result.compiler.codeLines.get(DFCodeblockName.GAME_EVENT)!.PlotStartup;
+  const reloadCode = getNamespaceReloadFunction(result.compiler).code.flat();
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "CreateList" &&
       block.args[0] instanceof VariableValue &&
@@ -1255,7 +1319,7 @@ Deno.test("partial nested defaults and chained dynamic namespace access compose 
     "partial default did not materialize its nested namespace key list",
   );
   assert(
-    startup.code.flat().some((block) => (
+    reloadCode.some((block) => (
       block instanceof ActionBlock &&
       block.action == "=" &&
       block.args[0] instanceof VariableValue &&
@@ -1288,7 +1352,7 @@ Deno.test("partial nested defaults and chained dynamic namespace access compose 
     "chained dynamic namespace writes did not target backing variables directly",
   );
   assert(
-    ![...startup.code.flat(), ...join.code.flat()].some(isDictionaryAction),
+    ![...reloadCode, ...join.code.flat()].some(isDictionaryAction),
     "chained namespace lowering must not copy values through dictionaries",
   );
 

@@ -274,13 +274,36 @@ const hasMember: ConditionDefinition = {
   },
 };
 
+const reload: FunctionDefinition = {
+  definitionType: DefinitionType.FUNCTION,
+  name: "namespace.reload",
+  signatures: [{ params: [] }],
+  defaultReturnType: Type.void,
+  getReturnType: () => Type.void,
+  compile(
+    args,
+    namedArgs,
+    ctx,
+    callNode,
+    extraInfo = {},
+  ): [CodeValue, CodeBlock[]] {
+    validateReflectionArguments(args, namedArgs, 0, callNode, ctx);
+    return [new EmptyValue(callNode), [
+      new ActionBlock(DFCodeblockName.CALL_FUNCTION, {
+        action: ctx.compiler.ensureSourceNamespaceReloadFunction(),
+      }),
+    ]];
+  },
+};
+
 /**
  * `namespace` is a real built-in namespace, unlike source namespaces.  It only
- * exposes reflection helpers; calls themselves verify that their argument is a
- * schema-backed source namespace.
+ * exposes reflection and namespace setup helpers; reflection calls themselves
+ * verify that their argument is a schema-backed source namespace.
  */
 export const NAMESPACE_REFLECTION_NAMESPACE = new Namespace("namespace", {
   getKeys,
   getValues,
   has_member: hasMember,
+  reload,
 });
