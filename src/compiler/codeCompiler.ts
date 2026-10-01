@@ -8,7 +8,7 @@ import * as fflate from "fflate";
 import * as AD from "../df/actiondump.ts";
 import { ErrorType, TCError, TCNodeError, TCNodePCodeError, TCStandaloneError } from "../error/error.ts";
 import { AccessExpression, AtomicExpression, BinaryExpression, BracketedAccessExpression, CallExpression, CallOrStartExpression, ChunkExpression, DictionaryExpression, Expression, GroupExpression, ListExpression, MissingExpression, PerSelectedExpression, SelectionExpression, TypecastExpression, UnaryPrefixExpression, VariableExpression } from "../ast/expression.ts";
-import { CodeValue, EmptyValue, FunctionValue, ItemValue, MissingValue, MultiValue, NamespaceValue, NumberValue, ParameterValue, LibraryItemValue, StringValue, StyledTextValue, TangibleValue, VariableValue, GameValueValue } from "./codeValue.ts";
+import { CodeValue, EmptyValue, FunctionValue, ItemValue, MissingValue, MultiValue, NamespaceValue, NumberValue, ParameterValue, LibraryItemValue, StringValue, StyledTextValue, TangibleValue, VariableValue, GameValueValue, BucketVariableValue } from "./codeValue.ts";
 import { Namespace } from "./namespace/namespace.ts";
 import { TempVarProvider } from "./tempVarProvider.ts";
 import { Operations } from "./operations.ts";
@@ -636,6 +636,36 @@ export class CodeCompiler {
         mode: "member" | "property", 
     ) {
         if (mode == "member" && accessor instanceof CodeValue) {
+            if (accessee instanceof MultiValue) {
+                if (!(accessor instanceof NumberValue && accessor.isCompileTimeConstant())) {
+                    this.reportError(
+                        expression.propertyName,
+                        `Multi-value return types must be indexed with a compile-time constant number.`,
+                        accessor,
+                    );
+                    return false;
+                }
+                let n = (accessor as NumberValue).toNumber();
+                if (isNaN(n)) {
+                    this.reportError(expression.propertyName,"Index must be a valid number")
+                    return false;
+                }
+                if (n <= 0) {
+                    this.reportError(expression.propertyName,"Index must be greater than 0");
+                }
+                if (n > accessee.values.length) {
+                    if (accessee.overflowType.matches(Type.void)) {
+                        this.reportError(expression.propertyName,`Index cannot be greater than the number of values (${accessee.values.length})`);
+                    } else if (accessee.values.length == 0) {
+                        this.reportError(expression.propertyName,`Return types with an unknown number of values cannot be indexed into`);
+                    } else {
+                        this.reportError(expression.propertyName,`When indexing into a return type with multiple values, only values which are guaranteed to exist can be accessed.`);
+                    }
+                    return false;
+                }
+                return true;
+            }
+
             if (!(accessor instanceof TangibleValue)) {
                 this.reportError(
                     expression.propertyName,
@@ -741,6 +771,11 @@ export class CodeCompiler {
     ): [CodeValue, CodeBlock[]] {
         let code: CodeBlock[] = [];
         if (mode == "member" && accessor instanceof TangibleValue) {
+            // multivalue indexing
+            if (accessee instanceof MultiValue) {
+                return [accessee.values[(accessor as NumberValue).toNumber() - 1], []];
+            }
+
             let tvp = context.perSelectedMode ? this.perSelectedTempVarProvider : this.tempVarProvider;
     
             let accesseeType = accessee.getType(this.env.types).getRuntimeType();
@@ -1057,7 +1092,9 @@ export class CodeCompiler {
                         }
                         return [new MissingValue(e), []];
                     } else if (parsed.length == 1 && parsed[0] instanceof SegmentPCode) {
-                        return [new StringValue(e.value), []];
+                        return [new StringValue(e.value,e), []];
+                    } else if (parsed.length == 0) {
+                        return [new StringValue("",e), []];
                     } else {
                         return [new StringValue(parsed,e), []];
                     }
@@ -1423,17 +1460,21 @@ export class CodeCompiler {
 
                 // generate path
                 let baseExpression: Expression | undefined;
-                let path: {accesseeType: Type, accessMode: "property" | "member", accessor: TangibleValue | string, expr: AccessExpression | BracketedAccessExpression}[] = [];
+                let baseExpressionTypeOverride: Type | undefined;
+                let path: {resultTypeOverride?: Type, accessMode: "property" | "member", accessor: TangibleValue | string, expr: AccessExpression | BracketedAccessExpression}[] = [];
                 const generatePath = (expr: Expression, typeOverride?: Type) => {
                     expr = expr.getRealExpression();
                     if (expr instanceof TypecastExpression) {
-                        generatePath(expr.left, this.env.types.evaluateExplicitType(expr.type))
+                        // carrying the existing type override forward here is intentional
+                        // for example, `anything as any as num` should ignore any type
+                        // overrides deeper than `as num`
+                        generatePath(expr.left, typeOverride ?? this.env.types.evaluateExplicitType(expr.type))
                     } else if (expr instanceof BracketedAccessExpression) {
                         let [accessor, keyCode] = this.compileExpression(expr.propertyName, exprContext);
                         if (!(accessor instanceof TangibleValue)) return;
                         code.push(...keyCode);
                         path.unshift({
-                            accesseeType: typeOverride ?? this.env.types.evaluateExpression(expr.accessee),
+                            resultTypeOverride: typeOverride,
                             accessMode: "member",
                             accessor,
                             expr,
@@ -1441,7 +1482,7 @@ export class CodeCompiler {
                         generatePath(expr.accessee);
                     } else if (expr instanceof AccessExpression) {
                         path.unshift({
-                            accesseeType: typeOverride ?? this.env.types.evaluateExpression(expr.accessee),
+                            resultTypeOverride: typeOverride,
                             accessMode: "property",
                             accessor: expr.propertyName.value,
                             expr
@@ -1449,6 +1490,7 @@ export class CodeCompiler {
                         generatePath(expr.accessee);
                     } else {
                         baseExpression = expr;
+                        baseExpressionTypeOverride = typeOverride;
                     }
                 }
                 generatePath(assigneeExpr);
@@ -1481,6 +1523,10 @@ export class CodeCompiler {
                             );
                             return;
                         }
+                        // apply any typecasting that got swallowed up in path generation
+                        if (path[pathIndex]?.resultTypeOverride) 
+                            child.getType = () => path[pathIndex].resultTypeOverride!;
+                        
                         code.push(...getterCode);
                         walkPath(child, pathIndex+1);
                         code.push(...this.compileSingleAccessSet(currentAccessee,accessor,child,path[pathIndex].accessMode,exprContext))
@@ -1511,6 +1557,10 @@ export class CodeCompiler {
                                     );
                                     return;
                                 }
+                                // apply any typecasting that got swallowed up in path generation
+                                if (path[pathIndex]?.resultTypeOverride) 
+                                    child.getType = () => path[pathIndex].resultTypeOverride!;
+
                                 code.push(...getterCode);
                                 incrementBase = child;
                             }
@@ -1536,9 +1586,15 @@ export class CodeCompiler {
 
                         // if this is setting a variable without a path, set directly
                         if (path.length == 0) {
+                            let exprToCheck = assigneeExpr.getRealExpression();
+                            while (exprToCheck instanceof TypecastExpression || exprToCheck instanceof GroupExpression) {
+                                if (exprToCheck instanceof GroupExpression) exprToCheck = exprToCheck.getRealExpression();
+                                if (exprToCheck instanceof TypecastExpression) exprToCheck = exprToCheck.left;
+                            }
                             if (!(
-                                (assigneeExpr instanceof VariableExpression)
-                                || (assigneeExpr instanceof AtomicExpression && currentAccessee instanceof VariableValue)
+                                (exprToCheck instanceof VariableExpression)
+                                || (exprToCheck instanceof AtomicExpression && currentAccessee instanceof VariableValue)
+                                || currentAccessee instanceof BucketVariableValue
                             )) {
                                 this.reportError(
                                     assigneeExpr, 
@@ -1562,6 +1618,7 @@ export class CodeCompiler {
                     }
                 }
                 let [baseValue, baseCode] = this.compileExpression(baseExpression, exprContext);
+                if (baseExpressionTypeOverride) baseValue.getType = () => baseExpressionTypeOverride!;
                 code.push(...baseCode);
                 walkPath(baseValue, 0);
             }

@@ -1,8 +1,8 @@
 import { DFCodeblockName, TC_HEADER} from "../../df/constants.ts";
 import { Type } from "../../typeProcessor/type.ts";
-import { allAreCompTimeConstant, getAllowedParticleFields, integerizeHexColor, parseTcNumber } from "../../util/utils.ts";
+import { allAreCompTimeConstant, getAllowedParticleFields, integerizeHexColor, numberIsHighPrecision, tcParseNumber } from "../../util/utils.ts";
 import { ActionBlock, CodeBlock } from "../codeBlock.ts";
-import { CodeValue, ItemValue, LibraryItemValue, LocationValue, MissingValue, NumberValue, ParticleValue, PotionValue, SoundValue, StringValue, TangibleValue, VariableValue, VectorValue } from "../codeValue.ts";
+import { ActionTagValue, BucketVariableValue, CodeValue, ItemValue, LibraryItemValue, LocationValue, MissingValue, NumberValue, ParticleValue, PotionValue, SoundValue, StringValue, TangibleValue, VariableValue, VectorValue } from "../codeValue.ts";
 import { DefinitionType, FunctionDefinition, USE_DEFAULT_RETURN_TYPE } from "./definition.ts";
 import * as AD from "../../df/actiondump.ts";
 import { EvaluationContext } from "../codeCompiler.ts";
@@ -43,6 +43,53 @@ function evaluateConstOrBlockTemplates(
         }
     }
     return [latestValue, code]
+}
+
+function getValueInlineString(v: CodeValue, code: CodeBlock[], relevantASTNode: ASTNode, ctx: EvaluationContext): string {
+    let nameToAdd: string;
+    if (v instanceof StringValue) {
+        return v.toString();
+    }
+    else if (!(v instanceof VariableValue)) {
+        ctx.reportError(
+            relevantASTNode,
+            `Expected a string value or a variable, got ${v.constructor.name}`,
+            v
+        );
+        return ""
+    }
+    else if (v.scope == VariableScope.LINE) {
+        nameToAdd = typeof v.name == "string" ? v.name : v.name.join("");
+    } 
+    // if this variable isn't line scoped, it must be extracted to a line
+    // scoped var because of %var's ambiguous scoping
+    else {
+        let temp = ctx.tvp.newTempVar(Type.str);
+        code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
+            action: "=",
+            args: [temp, v]
+        }))
+        nameToAdd = temp.name;
+    }
+    return `%var(${nameToAdd})`;
+}
+
+function validateNumArg(callNode: ASTNode, ctx: EvaluationContext, arg: CodeValue, field: string, minVal: number = -2147483648, maxValue: number = 2147483647, allowDecimals: boolean = false) {
+    if (arg !== undefined && arg instanceof NumberValue && arg.isCompileTimeConstant()) {
+        let v = arg.toNumber();
+        if (v < minVal || v > maxValue) {
+            ctx.reportError(
+                arg.astNode ?? callNode,
+                `${field} must be in the range ${minVal} to ${maxValue}`
+            );
+        }
+        if (!allowDecimals && !Number.isInteger(v)) {
+            ctx.reportError(
+                arg.astNode ?? callNode,
+                `${field} must be an integer`
+            );
+        }
+    }
 }
 
 /**
@@ -125,14 +172,56 @@ export const VEC_CONSTRUCTOR: FunctionDefinition = {
         }
         // non-constant vector
         else {
+            // for a number to be high-precision, it is also necessarily constant
+            let highPrecisionComponents: boolean[] = [];
+
+            for (let component of [x,y,z]) {
+                if (!(component instanceof NumberValue)) {
+                    highPrecisionComponents.push(false);
+                    continue;
+                }
+                highPrecisionComponents.push(numberIsHighPrecision(component.value));
+            }
+
+            // if there are no high precision components, the vector creation codeblock can be used
             let tempVar = ctx.tvp.newTempVar(Type.vec);
-            return [tempVar, [
-                new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                    action: "Vector",
-                    args: [tempVar, x, y, z] as TangibleValue[], // todo: this is awful and will likely cause crashes
-                    astNode: callNode,
-                })
-            ]];
+            tempVar.astNode = callNode;
+            if (highPrecisionComponents.length == 0) {
+                return [tempVar, [
+                    new ActionBlock(DFCodeblockName.SET_VARIABLE,{
+                        action: "Vector",
+                        args: [tempVar, x, y, z] as TangibleValue[], // todo: this is awful and will likely cause crashes
+                        astNode: callNode,
+                    })
+                ]];
+            }
+            // if there's a mix, create high precision comps with a vector constant
+            // and then add the dynamic components back to that vector constant
+            else {
+                let constantVec = new VectorValue(
+                    x.isCompileTimeConstant() ? (x as NumberValue).value as string : "0",
+                    y.isCompileTimeConstant() ? (y as NumberValue).value as string : "0",
+                    z.isCompileTimeConstant() ? (z as NumberValue).value as string : "0",
+                )
+                let currentValue: TangibleValue = constantVec;
+                let tagDef = AD.actions.get(DFCodeblockName.SET_VARIABLE)!.SetVectorComp.tags.Component;
+                let code: CodeBlock[] = [];
+                for (let [i, c, v] of [
+                    [0, "X", x], [1, "Y", y], [2, "Z", z], 
+                ] as [number, string, TangibleValue][]) { // todo: (TangibleValue) is awful and will likely cause crashes
+                    if (v.isCompileTimeConstant()) continue;
+                    code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
+                        action: "SetVectorComp",
+                        args: [tempVar, currentValue, v],
+                        tags: [new ActionTagValue(tagDef, c)],
+                    }));
+                    currentValue = tempVar;
+                }
+                
+                return [tempVar, code];
+            }
+            // if all components are high precision, the constant vector case
+            // will take care of this
         }
     },
 }
@@ -211,16 +300,16 @@ export const SND_CONSTRUCTOR: FunctionDefinition = {
         // validation
         let failed = false;
         if (args.length > 0 && args[0] instanceof StringValue && args[0].isCompileTimeConstant()) {
-            if (args[0].value.toLowerCase() in AD.sounds) {
+            let soundDef = AD.getSoundDefinition(args[0].value, true);
+            if (soundDef) {
                 // variant validation
-                let soundDef = AD.sounds[args[0].value];
-                if (soundDef && args.length>3 && args[3] instanceof StringValue && args[3].isCompileTimeConstant() && !soundDef.variants.includes(args[3].value)) {
+                if (args.length>3 && args[3] instanceof StringValue && args[3].isCompileTimeConstant() && !soundDef.variants.includes(args[3].value)) {
                     ctx.reportError(
                         args[3].astNode ?? callNode,
                         (
                             soundDef.variants.length == 0
-                            ? `Sound '${soundDef.name}' does not have multiple variants to choose from`
-                            : `Invalid variant '${args[3].value}' for sound '${soundDef.name}'`
+                            ? `Sound '${soundDef.id}' does not have multiple variants to choose from`
+                            : `Invalid variant '${args[3].value}' for sound '${soundDef.id}'`
                         )
                     )
                     failed = true
@@ -245,7 +334,7 @@ export const SND_CONSTRUCTOR: FunctionDefinition = {
             ctx, args,
             originalSound, Type.snd,
             [
-                [StringValue, "sound", "SetSoundType"],
+                [StringValue, "sound", " SetSoundType "],
                 undefined,
                 [NumberValue, "volume", "SetSoundVolume"],
                 [StringValue, "variant", "SetSoundVariant"],
@@ -341,7 +430,7 @@ export const POT_CONSTRUCTOR: FunctionDefinition = {
         // validation
         let failed = false;
         if (args.length > 0 && args[0] instanceof StringValue && args[0].isCompileTimeConstant()) {
-            if (!(args[0].value.toLowerCase() in AD.potions)) {
+            if (!AD.getPotionDefinition(args[0].value, true)) {
                 ctx.reportError(
                     args[0].astNode ?? callNode,
                     `Invalid effect id '${args[0].value}'`
@@ -349,6 +438,7 @@ export const POT_CONSTRUCTOR: FunctionDefinition = {
                 failed = true;
             }
         }
+        validateNumArg(callNode, ctx, args[2] ,"Duration");
 
         
         if (validateArguments(args, callNode, this.signatures, ctx) == null || failed) 
@@ -359,7 +449,7 @@ export const POT_CONSTRUCTOR: FunctionDefinition = {
             ctx, args,
             new PotionValue("Speed", 1, 1000000, callNode), Type.pot,
             [
-                [StringValue, "effect", "SetPotionType"],
+                [StringValue, "effect", " SetPotionType "],
                 [NumberValue, "level", "SetPotionAmp"],
                 [NumberValue, "duration", "SetPotionDur"],
             ]
@@ -414,20 +504,22 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
             ctx.reportError(callNode.callee,`Too many arguments. Expected 1 argument but got ${args.length}`);
         }
         
-        //=- particle name -=\\
+        //=- particle id -=\\
+        let parIdIsConstant = false;
         if (args.length == 0) {
             ctx.reportError(
                 callNode.callee, 
-                "Particle constructor must provide a particle name"
+                "Particle constructor must provide a particle id"
             );
         }
         // constant value
         else if (args[0] instanceof StringValue && args[0].isCompileTimeConstant()) {
-            parDef = AD.particles[args[0].value.toLowerCase()];
+            parIdIsConstant = true;
+            parDef = AD.getParticleDefinition(args[0].value, true);
             if (!parDef) {
                 ctx.reportError(
                     args[0].astNode ?? callNode.callee,
-                    `Invalid particle name '${args[0].value}'`
+                    `Invalid particle id '${args[0].value}'`
                 );
             }
             starterValue.particle = args[0].value;
@@ -435,7 +527,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         // variable value
         else if (validateType(args[0], Type.str)) {
             code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                action: "SetParticleType",
+                action: " SetParticleType ",
                 args: [tempVar, latestValue, args[0]]
             }))
             latestValue = tempVar;
@@ -455,7 +547,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
             let name = nameExpr.token.value;
             if (!allowedFields.includes(name)) {
                 if (parDef && name in PARTICLE_FIELD_DEFAULTS) {
-                    ctx.reportError(nameExpr.parent ?? nameExpr, `Particle '${parDef.name}' does not support field '${name}'`)
+                    ctx.reportError(nameExpr.parent ?? nameExpr, `Particle '${parDef.id}' does not support field '${name}'`)
                 } else {
                     ctx.reportError(nameExpr.parent ?? nameExpr, `Invalid particle field '${name}'`);
                 }
@@ -463,10 +555,41 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
             }
             fieldArgs[name] = argValue[0];
         }
-        // assign default values to any fields not specified
-        for (const field of allowedFields) {
+
+        // assign default values to required fields that were not specified
+
+        // if the particle id isn't constant, id-specific fields will get set to defaults when the setId() action is run
+        function assignDefault(field: string) {
             if (!(field in fieldArgs)) {
                 fieldArgs[field] = PARTICLE_FIELD_DEFAULTS[field];
+            }
+        }
+        let defaultableFields = parIdIsConstant ? allowedFields : ['amount', 'spreadHoriz', 'spreadVert'];
+        for (const field of defaultableFields) {
+            assignDefault(field)
+        }
+
+        if (!parIdIsConstant) {
+            // if there are any linked pairs of fields where only one is specified,
+            // always provide the other as a default. this is required in non-constant
+            // par ids because the linked fields will no longer be added in the defaultable pass.
+            let linkedFields: string[][] = [
+                ["spreadHoriz", "spreadVert"],
+                ["motion","motionVariation"],
+                ["color","colorVariation"],
+                ["size","sizeVariation"],
+            ]
+            for (const group of linkedFields) {
+                let shouldAddGroup = false;
+                for (const field of group) {
+                    if (field in fieldArgs) {
+                        shouldAddGroup = true;
+                        break;
+                    }
+                }
+                if (shouldAddGroup) {
+                    for (const field of group) assignDefault(field);
+                }
             }
         }
         
@@ -517,7 +640,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         }
 
         if (validateType(color, Type.str) && validateType(colorVariation, Type.num)) {
-            if (color instanceof StringValue && color.isCompileTimeConstant() && colorVariation instanceof NumberValue && colorVariation.isCompileTimeConstant()) {
+            if (parIdIsConstant && color instanceof StringValue && color.isCompileTimeConstant() && colorVariation instanceof NumberValue && colorVariation.isCompileTimeConstant()) {
                 let colInt = integerizeHexColor(color.value);
                 if (typeof colInt == "number") {
                     starterValue.data.rgb = colInt;
@@ -538,7 +661,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         //=- fade color -=\\
         let fadeColor = fieldArgs.fadeColor;
         if (validateType(fadeColor, Type.str)) {
-            if (fadeColor instanceof StringValue && fadeColor.isCompileTimeConstant()) {
+            if (parIdIsConstant && fadeColor instanceof StringValue && fadeColor.isCompileTimeConstant()) {
                 let colInt = integerizeHexColor(fadeColor.value);
                 if (typeof colInt == "number") {
                     starterValue.data.rgb_fade = colInt;
@@ -564,10 +687,10 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         let motionVariation = fieldArgs.motionVariation;
         let includeMotionVariation = allowedFields.includes("motionVariation");
         if (validateType(motion, Type.vec) && (!includeMotionVariation || validateType(motionVariation, Type.num))) {
-            if (motion instanceof VectorValue && motion.isCompileTimeConstant() && (!includeMotionVariation || (motionVariation instanceof NumberValue && motionVariation.isCompileTimeConstant()))) {
-                starterValue.data.x = parseTcNumber(motion.x);
-                starterValue.data.y = parseTcNumber(motion.y);
-                starterValue.data.z = parseTcNumber(motion.z);
+            if (parIdIsConstant && motion instanceof VectorValue && motion.isCompileTimeConstant() && (!includeMotionVariation || (motionVariation instanceof NumberValue && motionVariation.isCompileTimeConstant()))) {
+                starterValue.data.x = tcParseNumber(motion.x);
+                starterValue.data.y = tcParseNumber(motion.y);
+                starterValue.data.z = tcParseNumber(motion.z);
                 if (includeMotionVariation) starterValue.data.motionVariation = (motionVariation as NumberValue).toNumber();
             }
             else {
@@ -587,7 +710,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         let size = fieldArgs.size;
         let sizeVariation = fieldArgs.sizeVariation;
         if (validateType(size, Type.num) && validateType(sizeVariation, Type.num)) {
-            if (size instanceof NumberValue && size.isCompileTimeConstant() && sizeVariation instanceof NumberValue && sizeVariation.isCompileTimeConstant()) {
+            if (parIdIsConstant && size instanceof NumberValue && size.isCompileTimeConstant() && sizeVariation instanceof NumberValue && sizeVariation.isCompileTimeConstant()) {
                 starterValue.data.size = size.toNumber();
                 starterValue.data.sizeVariation = sizeVariation.toNumber();
             }
@@ -605,8 +728,8 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         //=- material -=\\
         let material = fieldArgs.material;
         if (validateType(material, Type.str)) {
-            if (material instanceof StringValue && material.isCompileTimeConstant()) {
-                let validIds = PAR_MATERIAL_FIELD_TYPES[parDef?.name ?? ''] ?? BLOCK_OR_ITEM_IDS; // least sinful use of ?? operator
+            if (parIdIsConstant && material instanceof StringValue && material.isCompileTimeConstant()) {
+                let validIds = PAR_MATERIAL_FIELD_TYPES[parDef?.id ?? ''] ?? BLOCK_OR_ITEM_IDS; // least sinful use of ?? operator
                 if (!validIds.has(material.value)) {
                     let addendum = "";
                     if (validIds == VALID_ITEM_IDS && VALID_BLOCK_IDS.has(material.value)) {
@@ -634,7 +757,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         //=- roll -=\\
         let roll = fieldArgs.roll;
         if (validateType(roll, Type.num)) {
-            if (roll instanceof NumberValue && roll.isCompileTimeConstant()) {
+            if (parIdIsConstant && roll instanceof NumberValue && roll.isCompileTimeConstant()) {
                 starterValue.data.roll = roll.toNumber();
             }
             else {
@@ -650,7 +773,8 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         //=- opacity -=\\
         let opacity = fieldArgs.opacity;
         if (validateType(opacity, Type.num)) {
-            if (opacity instanceof NumberValue && opacity.isCompileTimeConstant()) {
+            validateNumArg(callNode, ctx, opacity ,"Opacity",0, 100, true);
+            if (parIdIsConstant && opacity instanceof NumberValue && opacity.isCompileTimeConstant()) {
                 starterValue.data.opacity = opacity.toNumber();
             }
             else {
@@ -666,7 +790,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         //=- power -=\\
         let power = fieldArgs.power;
         if (validateType(power, Type.num)) {
-            if (power instanceof NumberValue && power.isCompileTimeConstant()) {
+            if (parIdIsConstant && power instanceof NumberValue && power.isCompileTimeConstant()) {
                 starterValue.data.power = power.toNumber();
             }
             else {
@@ -682,7 +806,7 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
         //=- duration -=\\
         let duration = fieldArgs.duration;
         if (validateType(duration, Type.num)) {
-            if (duration instanceof NumberValue && duration.isCompileTimeConstant()) {
+            if (parIdIsConstant && duration instanceof NumberValue && duration.isCompileTimeConstant()) {
                 starterValue.data.time = duration.toNumber();
             } else {
                 starterValue.data.time = 20;
@@ -691,6 +815,44 @@ export const PAR_CONSTRUCTOR: FunctionDefinition = {
                     args: [tempVar, latestValue, duration]
                 }));
                 latestValue = tempVar;
+            }
+        }
+
+        //=- water blocks -=\\
+        let waterBlocks = fieldArgs.waterBlocks;
+        if (validateType(waterBlocks, Type.num)) {
+            if (parIdIsConstant && waterBlocks instanceof NumberValue && waterBlocks.isCompileTimeConstant()) {
+                starterValue.data.waterBlocks = waterBlocks.toNumber();
+            } else {
+                ctx.reportError(
+                    waterBlocks.astNode ?? callNode.callee,
+                    "This field cannot be set dynamicly due to [a DiamondFire bug](https://discord.com/channels/471106238923538454/574342620999057429/1554577808758411332)."
+                )
+                // starterValue.data.waterBlocks = 2;
+                // code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
+                //     action: "action name here when it comes out",
+                //     args: [tempVar, latestValue, waterBlocks]
+                // }));
+                // latestValue = tempVar;
+            }
+        }
+
+        //=- burst impulse -=\\
+        let burstImpulse = fieldArgs.burstImpulse;
+        if (validateType(burstImpulse, Type.num)) {
+            if (parIdIsConstant && burstImpulse instanceof NumberValue && burstImpulse.isCompileTimeConstant()) {
+                starterValue.data.burstImpulse = burstImpulse.toNumber();
+            } else {
+                ctx.reportError(
+                    burstImpulse.astNode ?? callNode.callee,
+                    "This field cannot be set dynamicly due to a DiamondFire bug. Try again in a future update. \n(https://discord.com/channels/471106238923538454/574342620999057429/1554577808758411332)"
+                )
+                // starterValue.data.burstImpulse = 2;
+                // code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
+                //     action: "action name here when it comes out",
+                //     args: [tempVar, latestValue, burstImpulse]
+                // }));
+                // latestValue = tempVar;
             }
         }
 
@@ -833,38 +995,16 @@ export const LITEM_CONSTRUCTOR: FunctionDefinition = {
         if (useVarCompilation) {
             let outputVarName = `${TC_HEADER}LI_`;
     
-            function addVarToName(v: VariableValue | StringValue) {
-                let nameToAdd: string;
-                if (v instanceof StringValue) {
-                    outputVarName += v.value;
-                    return;
-                }
-                else if (v.scope == VariableScope.LINE) {
-                    nameToAdd = typeof v.name == "string" ? v.name : v.name.join("");
-                } 
-                // if this variable isn't line scoped, it must be extracted to a line
-                // scoped var because of %var's ambiguous scoping
-                else {
-                    let temp = ctx.tvp.newTempVar(Type.str);
-                    code.push(new ActionBlock(DFCodeblockName.SET_VARIABLE,{
-                        action: "=",
-                        args: [temp, v]
-                    }))
-                    nameToAdd = temp.name;
-                }
-                outputVarName += `%var(${nameToAdd})`;
-            }
-    
             if (constantLibrary != undefined) {
                 outputVarName += constantLibrary.id;
             } else {
-                addVarToName(args[0] as StringValue | VariableValue);
+                outputVarName += getValueInlineString(args[0], code, args[0].astNode ?? callNode, ctx);
             }
             outputVarName += "\uFFFF";
             if (constantItemId != undefined) {
                 outputVarName += constantItemId;
             } else {
-                addVarToName(args[1] as StringValue | VariableValue);
+                outputVarName += getValueInlineString(args[1], code, args[1].astNode ?? callNode, ctx);
             }
 
             outVal = new VariableValue(outputVarName, VariableScope.GLOBAL, Type.item, callNode);
@@ -875,7 +1015,7 @@ export const LITEM_CONSTRUCTOR: FunctionDefinition = {
             let numIsConstant = args[2] instanceof NumberValue && args[2] instanceof NumberValue && args[2].isCompileTimeConstant();
             // if the count can be inlined directly into the item, do that
             if (numIsConstant && outVal! instanceof LibraryItemValue) {
-                outVal!.countOverride = parseTcNumber((args[2] as NumberValue).value as string);
+                outVal!.countOverride = tcParseNumber((args[2] as NumberValue).value as string);
             } 
             // otherwise, generate a codeblock
             else {
@@ -889,5 +1029,39 @@ export const LITEM_CONSTRUCTOR: FunctionDefinition = {
         }
 
         return [outVal!, code];
+    },
+}
+
+export const BVAR_CONSTRUCTOR: FunctionDefinition = {
+    definitionType: DefinitionType.FUNCTION,
+    name: "bvar",
+    description: "Calling as a function returns the equivalent of a Bucket Variable code value.\n\nThese values can be assigned to variables.\n\`\`\`tc\n// this assignment works!\nbvar('%uuid data', 'coins') = 10\n\`\`\`\n\nAccess this as a namespace for related functions.",
+    defaultReturnType: Type.any,
+    signatures: [
+        {
+            params: [
+                {name: "bucket", type: Type.str, optional: false, plural: false},
+                {name: "variableName", type: Type.str, optional: false, plural: false},
+                {name: "namespaceAlias", type: Type.str, optional: true, plural: false},
+            ],
+            disallowSkips: true
+        }
+    ],
+    getReturnType: USE_DEFAULT_RETURN_TYPE,
+    compile(args, namedArgs, ctx, callNode, extraInfo = {}) {
+        if (validateArguments(args, callNode, this.signatures, ctx) == null) 
+            return [new MissingValue(callNode), []];
+
+        if (args[2] && !args[2].isCompileTimeConstant()) {
+            ctx.reportError(args[2].astNode ?? callNode, "Bucket variable namespace cannot be dynamic",args[2]);
+            return [new MissingValue(callNode), []];
+        }
+
+        let code = [];
+        return [new BucketVariableValue(
+            getValueInlineString(args[0], code, args[0].astNode ?? callNode, ctx),
+            getValueInlineString(args[1], code, args[1].astNode ?? callNode, ctx),
+            args.length > 2 ? getValueInlineString(args[2], code, args[2].astNode ?? callNode, ctx) : undefined
+        ), code];
     },
 }

@@ -109,7 +109,9 @@ function generateDefinitionCompletion(name: string, def: Definition, allowCallOr
             label: name,
             kind: (def as any).compileIf ? CompletionItemKind.Property : CompletionItemKind.Method,
             commitCharacters: ["("],
-
+            data: {
+                deprecationMessage: def.deprecationMessage
+            },
         }
         if (def.autocompleteSortPrefix) {
             item.sortText = "z" + def.autocompleteSortPrefix + item.label;
@@ -623,6 +625,13 @@ export class LanguageServer {
                     label: ""
                 } as SignatureInformation
 
+                if (definition.deprecationMessage !== undefined) {
+                    info.documentation = {
+                        kind: "markdown",
+                        value: `⚠️ **THIS IS DEPRECATED** ⚠️\n\n----\n\n${definition.deprecationMessage}\n\n----\n\n`
+                    };
+                }
+
                 let paramStrings: string[] = []
 
                 for (const param of signature.params) {
@@ -695,6 +704,9 @@ export class LanguageServer {
             }
             else if (data.type == CompletionItemType.TAG_OPTION) {
                 documentation = data.tag.options?.[data.option].description.replaceAll("<","\\<");
+            }
+            else {
+                return item;
             }
             item.documentation = {
                 kind: "markdown",
@@ -936,9 +948,9 @@ export class LanguageServer {
                     if (posIndexIsInListElement(callNode.args, index, 0)) {
                         items.push(...Object.values(AD.sounds).map(sound => 
                             stringizeCompletionItem({
-                                label: sound.name,
+                                label: sound.id,
                                 kind: CompletionItemKind.Text,
-                                sortText: "\u0000"+sound.name,
+                                sortText: "\u0000"+sound.id,
                             }, node, doc)
                         ));
                     }
@@ -946,8 +958,7 @@ export class LanguageServer {
                     else if (posIndexIsInListElement(callNode.args, index, 3)) {
                         let [nameValue, _] = doc.compiler.compileExpression(callNode.args.elements[0], {});
                         if (nameValue instanceof StringValue && nameValue.isCompileTimeConstant()) {
-                            let soundName = nameValue.value;
-                            let soundDef = AD.sounds[nameValue.value];
+                            let soundDef = AD.getSoundDefinition(nameValue.value, true);
                             if (soundDef) {
                                 items.push(...soundDef.variants.map(name => 
                                     stringizeCompletionItem({
@@ -966,9 +977,9 @@ export class LanguageServer {
                     if (posIndexIsInListElement(callNode.args, index, 0)) {
                         items.push(...Object.values(AD.potions).map(pot => 
                             stringizeCompletionItem({
-                                label: pot.name,
+                                label: pot.id,
                                 kind: CompletionItemKind.Text,
-                                sortText: "\u0000"+pot.name,
+                                sortText: "\u0000"+pot.id,
                             }, node, doc)
                         ));
                     }
@@ -987,9 +998,9 @@ export class LanguageServer {
                     if (posIndexIsInListElement(callNode.args, index, 0)) {
                         items.push(...Object.values(AD.particles).map(par => 
                             stringizeCompletionItem({
-                                label: par.name,
+                                label: par.id,
                                 kind: CompletionItemKind.Text,
-                                sortText: "\u0000"+par.name,
+                                sortText: "\u0000"+par.id,
                             }, node, doc)
                         ));
                     }
@@ -1086,6 +1097,10 @@ export class LanguageServer {
                         documentation: isTypeNamespace ? {
                             kind: "markdown",
                             value: (TYPE_DESCRIPTIONS[id] ?? "") + `\n\nAccess this as a namespace (e.g. \`${id}.${Object.keys(namespace.members)[0]}\`) for related functions.`
+                        } : 
+                        namespace.nameFunction ? {
+                            kind: "markdown",
+                            value: namespace.nameFunction.description ?? ""
                         } : undefined
                     });
                 }
@@ -1120,15 +1135,8 @@ export class LanguageServer {
                 }
             }
 
-            // items = [];
-            // doc.workspace.forEachItemLibrary(l => {
-            //     if (l.parsedContents == null) return;
-            //     for (const i of Object.keys(l.parsedContents.items)) {
-            //         items.push({
-            //             label: `${l.parsedContents.id} ${i}`
-            //         })
-            //     }
-            // })
+            // final pass: filter out all deprecated items
+            items = items.filter(item => item.data?.deprecationMessage === undefined);
 
             slog ("Returned",items.length,"items")
             let response: CompletionList = {

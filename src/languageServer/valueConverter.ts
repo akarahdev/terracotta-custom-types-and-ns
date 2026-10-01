@@ -1,3 +1,4 @@
+import { PrepareSupportDefaultBehavior } from "vscode-languageserver";
 import { ParticleExtraData } from "../compiler/codeValue.ts";
 import { particles, potions, sounds } from "../df/actiondump.ts";
 import { MCNote } from "../util/note.ts";
@@ -42,6 +43,13 @@ function convertNumber(n: number, precision: number = 3) {
 		.replace(/(?<!^)(?:\.|(?<=[^0]))0+$/,"") //remove trailing decimal places
 	);
 }
+
+function chopPrefix(s: string, prefix: string = "minecraft:"): string {
+    if (s.startsWith(prefix)) 
+        s = s.substring(prefix.length);
+    return s;
+}
+
 /**
  * Values which are invalid or could not be converted will be returned as null
  */
@@ -92,12 +100,9 @@ export function convertDFValue(value: DFValueData): string | null {
         let args: string[] = [];
 
         if ("key" in value.data) {
-            let key = value.data.key;
-            if (key.startsWith("minecraft:")) 
-                key = key.substring("minecraft:".length);
-            args.push(valueToTCString(key));
+            args.push(valueToTCString(chopPrefix(value.data.key)));
         } else {
-            args.push(valueToTCString(sounds[value.data.sound.toLowerCase()]?.name ?? value.data.sound));
+            args.push(valueToTCString(chopPrefix(sounds[value.data.sound.toLowerCase()]?.id ?? value.data.sound)));
         }
 
         let pitchArg: string = convertNumber(value.data.pitch,15);
@@ -172,6 +177,14 @@ export function convertDFValue(value: DFValueData): string | null {
             fields.duration = convertNumber(pdata.time)
         }
 
+        if (pdata.waterBlocks !== undefined && pdata.waterBlocks !== 2) {
+            fields.waterBlocks = convertNumber(pdata.waterBlocks)
+        }
+
+        if (pdata.burstImpulse !== undefined && pdata.burstImpulse !== 1.5) {
+            fields.burstImpulse = convertNumber(pdata.burstImpulse)
+        }
+
         if (value.data.cluster.horizontal !== 0 || value.data.cluster.vertical !== 0) {
             fields.spreadHoriz = convertNumber(value.data.cluster.horizontal);
             fields.spreadVert = convertNumber(value.data.cluster.vertical);
@@ -179,7 +192,7 @@ export function convertDFValue(value: DFValueData): string | null {
 
 
         let fieldsEntries = Object.entries(fields);
-        let name = particles[value.data.particle.toLowerCase()]?.name ?? value.data.particle;
+        let name = chopPrefix(particles[value.data.particle.toLowerCase()]?.id ?? value.data.particle);
         if (fieldsEntries.length > 0) {
             return `par(${valueToTCString(name)}, ${fieldsEntries.map(([k, v]) => `${k}=${v}`).join(", ")})`;
         } else {
@@ -188,7 +201,7 @@ export function convertDFValue(value: DFValueData): string | null {
     }
     else if (value.id == "pot") {
         let args: string[] = [
-            valueToTCString(potions[value.data.pot.toLowerCase()]?.name ?? value.data.pot),
+            valueToTCString(chopPrefix(potions[value.data.pot.toLowerCase()]?.id ?? value.data.pot)),
         ];
         if (value.data.amp != 0 || value.data.dur != 1000000) {
             args.push(convertNumber(value.data.amp+1));

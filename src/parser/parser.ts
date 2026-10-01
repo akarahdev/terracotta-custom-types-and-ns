@@ -58,6 +58,8 @@ export class Parser {
 
             [TokenType.MINUS,           {bp: BindingPower.PREFIX,   processor: this.parseUnaryPrefixExpression}],
             [TokenType.BANG,            {bp: BindingPower.PREFIX,   processor: this.parseUnaryPrefixExpression}],
+            [TokenType.BW_NOT,          {bp: BindingPower.PREFIX,   processor: this.parseUnaryPrefixExpression}],
+            [TokenType.PBW_NOT,         {bp: BindingPower.PREFIX,   processor: this.parseUnaryPrefixExpression}],
         ]);
         this.tokenLEDProperties = new Map<TokenType, LEDProcessingProperties>([
             [TokenType.EQUALS,          {bp: BindingPower.ASSIGN,   processor: this.parseBinaryExpression}],
@@ -485,7 +487,7 @@ export class Parser {
                 elementStartPositions.push(delimiterToken.endPos);
             }
         }
-        let [closer, closerFound] = this.expect(closerType);
+        let [closer, closerFound] = this.expectOrMissing(closerType);
         return new ListExpression<T>(opener, elements, closer, elementStartPositions);
     }
 

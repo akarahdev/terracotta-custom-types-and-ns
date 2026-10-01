@@ -1,8 +1,9 @@
-import { Expression } from "../ast/expression.ts";
+import { AtomicExpression, Expression } from "../ast/expression.ts";
+import { TokenType } from "../ast/token.ts";
 import { ParameterSignature } from "../compiler/namespace/definition.ts";
 import { getWidestType, ListTypeData, Type } from "../typeProcessor/type.ts";
 import { TypeProcessor } from "../typeProcessor/typeProcessor.ts";
-import { getTagsAndArgTypes } from "../util/utils.ts";
+import { getTagsAndArgTypes, tcParseNumber } from "../util/utils.ts";
 
 const firstListGenericType = (args: Expression[], types: TypeProcessor, methodCallOf?: Type) => {
     let [argTypes, _] = getTagsAndArgTypes(args, types, methodCallOf);
@@ -59,6 +60,8 @@ export const OVERRIDES: {
             "SetPlayerTime": "setTime",
             "AttackAnimation": "sendAttackAnimation",
             "SetMaxHealth": "setMaxHealth",
+            "NumEnvOption": "setNumEnvOption",
+            "ColorEnvOption": "setColEnvOption",
         },
         "ENTITY ACTION": {
             "SetBaby": "setIsBaby",
@@ -73,7 +76,9 @@ export const OVERRIDES: {
             "RideEntity": "ride",
             "SetItem": "setItem",
             "SetWitherInvul": "setWitherInvulnerability",
-            "SetInvulTicks": "setInvulnerabilityTicks"
+            "SetInvulTicks": "setInvulnerabilityTicks",
+            "SetFireworkTicks": "setFireworkTicks",
+            "IgniteMob": "ignite",
         },
         "GAME ACTION": {
             "LaunchProj": "launchProjectile",
@@ -158,10 +163,10 @@ export const OVERRIDES: {
             "ShiftAllDirections": "shiftAllDirections",
             "ClampLoc": "clamp",
             "ClearItemTag": "clearTags",
-            "GetItemAttribute": "getAttribute",
+            " GetItemAttribute ": "getAttribute",
             " GetItemName ": "getName",
             "GetItemRarity": "getRarity",
-            "AddItemAttribute": "addAttribute",
+            " AddItemAttribute ": "addAttribute",
             "SetItemDura": "setDurability",
             "SetBreakability": "setBreakability",
             " GetItemLore ": "getLore",
@@ -242,6 +247,9 @@ export const OVERRIDES: {
             "AppendDict": "append",
             "RemoveDictEntry": "remove",
             "GetDictValue": "get",
+
+            " GetParticleType ": "getId",
+            " SetParticleType ": "setId",
             "SetParticleType": "setType",
             "GetParticleMat": "getMaterial",
             "SetParticleSprd": "setSpread",
@@ -266,6 +274,7 @@ export const OVERRIDES: {
             "GetParticleDur": "getDuration",
             "SetParticlePower": "setPower",
             "GetParticlePower": "getPower",
+
             "ClampVector": "clamp",
             "MultiplyVector": "multiply",
             "VectorBetween": "between",
@@ -286,12 +295,18 @@ export const OVERRIDES: {
             "RotationVector": "fromRotation",
             "RandomVector": "random",
             "SwapVectorComp": "swap",
+
+            " GetPotionType ": "getId",
+            " SetPotionType ": "setId",
             "GetPotionType": "getType",
             "SetPotionDur": "setDuration",
             "SetPotionType": "setType",
             "SetPotionAmp": "setAmplifier",
             "GetPotionAmp": "getAmplifier",
             "GetPotionDur": "getDuration",
+
+            " GetSoundType ": "getId",
+            " SetSoundType ": "setId",
             "GetSoundVolume": "getVolume",
             "GetCustomSound": "getCustomKey",
             "SetSoundType": "setType",
@@ -302,6 +317,14 @@ export const OVERRIDES: {
             "SetCustomSound": "setCustomKey",
             "SetSoundVariant": "setVariant",
             "GetSoundPitch": "getPitch",
+
+            "GetBucketVar": "getVariable",
+            "GetBucketVars": "getVariables",
+            "LoadBucket": "load",
+            "PurgeBucket": "purge",
+            "LoadedBuckets": "getLoaded",
+            "SaveBucket": "save",
+            "SaveUnloadBucket": "saveAndUnload",
         },
         "IF PLAYER": {},
         "IF ENTITY": {
@@ -515,6 +538,7 @@ export const OVERRIDES: {
         "Movement Key": "key",
         "Redstone Power Mode": "mode",
         "Close Player Inventory": "closePlayerInv",
+        "Environment Option": "option"
     },
     gameValueNames: {
         "X-Coordinate": "x",
@@ -543,6 +567,13 @@ export const OVERRIDES: {
                     return Type.txt;
             },
             "GetBlockType": (args: Expression[], types: TypeProcessor, methodCallOf?: Type) => {
+                let [_, tags] = getTagsAndArgTypes(args, types, methodCallOf);
+                if (tags.returnValue == "Item")
+                    return Type.item;
+                else
+                    return Type.str;
+            },
+            "GetItemType": (args: Expression[], types: TypeProcessor, methodCallOf?: Type) => {
                 let [_, tags] = getTagsAndArgTypes(args, types, methodCallOf);
                 if (tags.returnValue == "Item")
                     return Type.item;
@@ -612,6 +643,44 @@ export const OVERRIDES: {
 
                 return Type.list(flatTypes[0] ?? Type.void);
             },
+            "TrimList": (args: Expression[], types: TypeProcessor, methodCallOf?: Type) => {
+                let [argTypes, _] = getTagsAndArgTypes(args, types, methodCallOf);
+
+                if (argTypes.length < 2 || !argTypes[0].matches(Type.list)) 
+                    return Type.list(Type.any);
+
+                let listData = argTypes[0].data as ListTypeData;
+
+                // todo: read number from type data when that becomes possible
+                let argListOffset = methodCallOf ? -1 : 0;
+                let startArgIndex = 1+argListOffset;
+                let endArgIndex = 2+argListOffset;
+
+                // start index is a constant number, try to actually trim index types if possible
+                // console.log(startArgIndex, endArgIndex, args.length);
+                if (args[startArgIndex] instanceof AtomicExpression && args[startArgIndex].token.type == TokenType.NUMERIC_LITERAL) {
+                    let startIndex = tcParseNumber(args[startArgIndex].token.value);
+                    if (isNaN(startIndex)) 
+                        return Type.list(getWidestType(...listData.indexTypes, listData.genericType));
+                    if (startIndex > listData.indexTypes.length) 
+                        return Type.list(listData.genericType);
+
+                    let endIndex = NaN;
+                    if (args[endArgIndex] instanceof AtomicExpression && args[endArgIndex].token.type == TokenType.NUMERIC_LITERAL) {
+                        endIndex = tcParseNumber(args[endArgIndex].token.value);
+                    };
+
+                    if (isNaN(endIndex) || endIndex > listData.indexTypes.length) {
+                        return Type.list(listData.genericType, listData.indexTypes.slice(startIndex-1));
+                    } else {
+                        return Type.list(Type.void, listData.indexTypes.slice(startIndex-1,endIndex));
+                    }
+                }
+                // if start index is not a constant number, no special behavior can occur
+                else {
+                    return Type.list(getWidestType(...listData.indexTypes, listData.genericType));
+                }
+            },
             "GetSoundPitch": (args: Expression[], types: TypeProcessor, methodCallOf?: Type) => {
                 let [_, tags] = getTagsAndArgTypes(args, types, methodCallOf);
                 if (tags.returnValue == "Note (text)") {
@@ -665,6 +734,10 @@ export const OVERRIDES: {
             "GetListValue": firstListGenericType,
 
             "WebResponse": Type.dict(Type.void, {statusText: Type.str, body: Type.str, json: Type.any}),
+            "GetColorChannels": Type.list(Type.void, [Type.num, Type.num, Type.num]),
+            
+            "LoadedBuckets": Type.list(Type.str),
+            "GetBucketVars": Type.multivalue([Type.list(Type.any), Type.str], Type.void),
 
             "String": Type.str,
             "TranslateColors": Type.str,
@@ -741,7 +814,7 @@ export const OVERRIDES: {
             "SetLodestoneLoc": Type.item,
             "SetArmorTrim": Type.item,
             "SetItemColor": Type.item,
-            "AddItemAttribute": Type.item,
+            " AddItemAttribute ": Type.item,
             "SetMapTexture": Type.item,
             " GetItemEnchants ": Type.dict(Type.num),
             " GetItemLore ": Type.list(Type.txt),
@@ -758,6 +831,7 @@ export const OVERRIDES: {
 
             "GetDictKeys": Type.list(Type.str),
 
+            " SetParticleType ": Type.par,
             "SetParticleType": Type.par,
             "SetParticleAmount": Type.par,
             "SetParticleSprd": Type.par,
@@ -775,10 +849,12 @@ export const OVERRIDES: {
             "SetVectorComp": Type.vec,
             "SetVectorLength": Type.vec,
 
+            " SetPotionType ": Type.pot,
             "SetPotionType": Type.pot,
             "SetPotionAmp": Type.pot,
             "SetPotionDur": Type.pot,
 
+            " SetSoundType ": Type.snd,
             "SetSoundType": Type.snd,
             "SetSoundVariant": Type.snd,
             "SetCustomSound": Type.snd,
@@ -791,6 +867,7 @@ export const OVERRIDES: {
             "JsonToValue": Type.any,
 
             "GetContainerItems": Type.list(Type.item),
+            "ContainerLock": Type.str,
         },
     },
     returnValueAtEndActions: {
