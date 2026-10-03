@@ -2634,7 +2634,7 @@ export class TypeProcessor {
 
   private evaluateExpressionLogic(
     expression: Expression,
-    frame: EnvironmentFrame = this.globalFrame,
+    frame: EnvironmentFrame,
   ): Type {
     expression = expression.getRealExpression();
     if (expression instanceof AtomicExpression) {
@@ -2772,7 +2772,7 @@ export class TypeProcessor {
 
   evaluateExpression(
     expression: Expression,
-    frame: EnvironmentFrame = this.globalFrame,
+    frame: EnvironmentFrame = this.getNodeFrame(expression),
   ): Type {
     let cachedType = this.expressionTypeCache.get(expression)?.get(frame);
     if (cachedType) return cachedType;

@@ -5,8 +5,8 @@ import { ActionBlock, BracketBlock, BracketDirection, BracketType, CodeBlock } f
 import { MultiValueTypeData, Type, TYPE_NAMESPACES } from "../../typeProcessor/type.ts";
 import { ParameterSignatureEntry, ParameterSignature, DefinitionType, FunctionDefinition, ValueDefinition, ConditionDefinition, USE_DEFAULT_RETURN_TYPE, FunctionCallExtraInfo, Definition, PropertyDefinition } from "./definition.ts";
 import { Namespace } from "./namespace.ts";
-import { CREATE_SELECTION_ACTION_LIST, FILTER_SELECTION_ACTION_LIST, FORCED_EVENT_ACTIONS, TYPE_DOMAIN_ACTIONS, TYPE_DOMAIN_CONDITIONS } from "../../data/constants.ts";
-import { ITEM_CONSTRUCTOR, LOC_CONSTRUCTOR, PAR_CONSTRUCTOR, POT_CONSTRUCTOR, SND_CONSTRUCTOR, VEC_CONSTRUCTOR } from "./constructors.ts";
+import { CREATE_SELECTION_ACTION_LIST, DEPRECATED_ACTIONS, FILTER_SELECTION_ACTION_LIST, FORCED_EVENT_ACTIONS, TYPE_DOMAIN_ACTIONS, TYPE_DOMAIN_CONDITIONS } from "../../data/constants.ts";
+import { BVAR_CONSTRUCTOR, ITEM_CONSTRUCTOR, LOC_CONSTRUCTOR, PAR_CONSTRUCTOR, POT_CONSTRUCTOR, SND_CONSTRUCTOR, VEC_CONSTRUCTOR } from "./constructors.ts";
 import { expressionizeIfBlock, toNameCase, upperFirst } from "../../util/utils.ts";
 import { OVERRIDES } from "../../data/overrides.ts";
 import { validateArguments } from "../../util/argValidation.ts";
@@ -150,8 +150,20 @@ export function generateActionHook(functionName: string, codeblock: DFCodeblockN
     if (!actionDef) throw new Error(`Initialization Error: Attempted to generate action hook for '${codeblock} ${actionDFName}' but no definition exists in the action dump.`)
 
     // TODO: support multiple return values
-    let dfReturnType = actionDef?.returnTypes[0]?.groups[0]?.[0]?.type;
-    let tcReturnType = dfReturnType ? dfTypeToTC.get(dfReturnType)! : Type.void;
+    let allReturnTypes: Type[] = [];
+    for (let value of actionDef.returnTypes) {
+        if (value.groups.length > 1 || value.groups[0]?.length > 1) {
+            allReturnTypes.push(Type.any);
+        } else {
+            allReturnTypes.push(dfTypeToTC.get(value.groups[0]?.[0]?.type) ?? Type.void);
+        }
+    }
+
+    let tcReturnType = (
+        allReturnTypes.length == 0 ? Type.void
+        : allReturnTypes.length == 1 ? allReturnTypes[0]
+        : Type.multivalue(allReturnTypes, Type.void)
+    );
 
     let getReturnType = USE_DEFAULT_RETURN_TYPE;
     let returnTypeOverride = OVERRIDES.returnTypes[codeblock]?.[actionDFName]
@@ -199,15 +211,16 @@ export function generateActionHook(functionName: string, codeblock: DFCodeblockN
             }).filter(group => group.length > 0);
     
             let optionalModified = false;
-            for (const values of groups) {
-                //if being assigned to a variable, exclude first var param from signature
-                if (AD.isParamGroupValueSetter(values[0])) {
+            groupIterator: for (const values of groups) {
+                while (AD.isParamGroupValueSetter(values[0])) {
                     varRemoved = true;
                     values.shift();
+
                     if (values.length == 0) {
-                        continue;
+                        continue groupIterator;
                     }
                 }
+
                 // if the next parameter was marked as optional expecting the now removed
                 // variable to fill in for it, change it to be required
                 let forceRequired = false;
@@ -282,6 +295,7 @@ export function generateActionHook(functionName: string, codeblock: DFCodeblockN
             return [returnValue, code];
         },
 
+        deprecationMessage: DEPRECATED_ACTIONS[actionDFName],
         autocompleteSortPrefix: OVERRIDES.autocompleteSortPrefixes[codeblock]?.[actionDFName],
     }
 }
@@ -644,6 +658,8 @@ TYPE_NAMESPACES.par = new Namespace('par', typeActionMembers('par'), PAR_CONSTRU
 TYPE_NAMESPACES.item = new Namespace('item', typeActionMembers('item'), ITEM_CONSTRUCTOR);
 TYPE_NAMESPACES.list = new Namespace('list', typeActionMembers('list'));
 TYPE_NAMESPACES.dict = new Namespace('dict', typeActionMembers('dict'));
+
+export const BUCKET_VAR_NAMESPACE = new Namespace('bvar', typeActionMembers('bvar'), BVAR_CONSTRUCTOR);
 
 export const REPEAT_ACTIONS: {[tcName: string]: {def: FunctionDefinition, returnType: Type}} = {
     range:      {def: generateActionHook('range', DFCodeblockName.REPEAT, " Range "),   returnType: Type.num},

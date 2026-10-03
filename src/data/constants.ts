@@ -28,17 +28,18 @@ export const TYPE_DOMAIN_ACTIONS = {
         //stuff in misc category
         "BlockHardness","BlockResistance",
     ],
+    bvar: ["LoadedBuckets", "LoadBucket", "SaveBucket", "SaveUnloadBucket", "GetBucketVar", "PurgeBucket", "GetBucketVars"],
     num: ["+", "-", "x", "/", "%", "+=", "-=", "Exponent", "Root", "Logarithm", "ParseNumber", "AbsoluteValue", "ClampNumber", "WrapNum", "Average", "RandomNumber", " RoundNumber ", "MinNumber", "MaxNumber", "NormalRandom", "Sine", "Cosine", "Tangent", "Noise", "GradientNoise", "CellularNoise", "ValueNoise", "Bitwise", "BounceNum", "ArcTangent2", "Interpolate", ],
     str: ["String", "ReplaceString", "RemoveString", "TrimString", "SplitString", "SetCase", "StringLength", "RepeatString", "FormatTime", "TranslateColors", "Base64Decode", "Base64Encode", "GzipDecompress", "GzipCompress", "SanitizeTags", "BytesToString", "StringToBytes", "AllRegexGroups", "GetRegexGroup", "NamedRegexGrps", "IndexOfSubstring", "SegmentString", "AllRegexMatches"],
     txt: ["StyledText", "ClearFormatting", "GetMiniMessageExpr", "ParseMiniMessage", "TrimStyledText", "ContentLength"],
     loc: ["GetCoord", "SetCoord", "SetAllCoords", "ShiftOnAxis", "ShiftAllAxes", "ShiftInDirection", "ShiftAllDirections", "ShiftToward", "ShiftOnVector", "GetDirection", " SetDirection ", "ShiftRotation", "FaceLocation", "AlignLoc", "Distance", "GetCenterLoc", "RandomLoc", "ClampLoc"],
-    item: ["GetItemType", "SetItemType", " GetItemName ", " SetItemName ", " GetItemLore ", "GetLoreLine", " SetItemLore ", "GetItemAmount", "SetItemAmount", "GetMaxAmount", "GetItemDura", "SetItemDura", "SetBreakability", " GetItemEnchants ", " SetItemEnchants ", "AddItemEnchant", "RemItemEnchant", "ClearEnchants", "GetHeadOwner", " SetHeadTexture ", " GetBookText ", "SetBookText", "GetItemTag", "GetAllItemTags", "SetItemTag", "RemoveItemTag", "ClearItemTag", "GetItemEffects", "SetItemEffects", "GetCanPlaceOn", "SetCanPlaceOn", "GetCanDestroy", "SetCanDestroy", "GetItemRarity", "GetLodestoneLoc", "SetLodestoneLoc", "SetArmorTrim", "GetItemColor", "SetItemColor", "GetItemAttribute", "AddItemAttribute", "SetMapTexture", "SetMaxAmount", "GetBlockByMCTag", "GetItemByMCTag", "SetItemGlowing", "AddItemToolRule", "SetItemMaxDura", "SetItemTool", "SetItemHideTooltip", "AddItemLore", "RemoveItemAttrs", "ClearItemAttrs", "GetCrossbowProj", "SetCrossbowProj", "SetBundleItems", "SetBreakSound", "SetConsumable", "GetItemLeftover", "SetModelDataNums", "SetItemRarity", "GetBundleItems", "SetModelDataStrs", "GetModelDataStrs", "SetItemLeftover", "SetItemModel", "GetTooltipStyle", "GetModelDataNums", "GetBreakSound", "SetItemWeapon", "GetConsumable", "HiddenComponents", "GetItemModel", "SetAllItemTags", "GetItemWeapon", "SetTooltipStyle", "GetConsumable", "SetConsumable", "GetAllItems"],
+    item: ["GetItemType", "SetItemType", " GetItemName ", " SetItemName ", " GetItemLore ", "GetLoreLine", " SetItemLore ", "GetItemAmount", "SetItemAmount", "GetMaxAmount", "GetItemDura", "SetItemDura", "SetBreakability", " GetItemEnchants ", " SetItemEnchants ", "AddItemEnchant", "RemItemEnchant", "ClearEnchants", "GetHeadOwner", " SetHeadTexture ", " GetBookText ", "SetBookText", "GetItemTag", "GetAllItemTags", "SetItemTag", "RemoveItemTag", "ClearItemTag", "GetItemEffects", "SetItemEffects", "GetCanPlaceOn", "SetCanPlaceOn", "GetCanDestroy", "SetCanDestroy", "GetItemRarity", "GetLodestoneLoc", "SetLodestoneLoc", "SetArmorTrim", "GetItemColor", "SetItemColor", " GetItemAttribute ", " AddItemAttribute ", "SetMapTexture", "SetMaxAmount", "GetBlockByMCTag", "GetItemByMCTag", "SetItemGlowing", "AddItemToolRule", "SetItemMaxDura", "SetItemTool", "SetItemHideTooltip", "AddItemLore", " RemoveItemAttrs ", "ClearItemAttrs", "GetCrossbowProj", "SetCrossbowProj", "SetBundleItems", "SetBreakSound", "SetConsumable", "GetItemLeftover", "SetModelDataNums", "SetItemRarity", "GetBundleItems", "SetModelDataStrs", "GetModelDataStrs", "SetItemLeftover", "SetItemModel", "GetTooltipStyle", "GetModelDataNums", "GetBreakSound", "SetItemWeapon", "GetConsumable", "HiddenComponents", "GetItemModel", "SetAllItemTags", "GetItemWeapon", "SetTooltipStyle", "GetConsumable", "SetConsumable", "GetAllItems"],
     list: ["CreateList", "AppendValue", "AppendList", "GetListValue", "PopListValue", "SetListValue", "GetValueIndex", "ListLength", "InsertListValue", "RemoveListValue", "RemoveListIndex", "DedupList", "TrimList", "SortList", "ReverseList", "RandomizeList", "FlattenList", "DestructureList", "JoinString", "SegmentList", "JoinStyledText"],
     dict: ["CreateDict", "SetDictValue", "GetDictValue", "GetDictSize", "RemoveDictEntry", "ClearDict", "GetDictKeys", "GetDictValues", "AppendDict", "SortDict"],
-    par: ["GetParticleType", "SetParticleType", "GetParticleAmount", "SetParticleAmount", "GetParticleSprd", "SetParticleSprd", "GetParticleSize", "SetParticleSize", "GetParticleMat", "SetParticleMat", "GetParticleColor", "SetParticleColor", "GetParticleMotion", "SetParticleMotion", "GetParticleRoll", "SetParticleRoll", "SetParticleOpac", "GetParticleOpac", "GetParticleFade", "SetParticleFade", "GetParticleDur", "SetParticleDur", "SetParticlePower", "GetParticlePower"],
+    par: ["GetParticleType", "SetParticleType", "GetParticleAmount", "SetParticleAmount", "GetParticleSprd", "SetParticleSprd", "GetParticleSize", "SetParticleSize", "GetParticleMat", "SetParticleMat", "GetParticleColor", "SetParticleColor", "GetParticleMotion", "SetParticleMotion", "GetParticleRoll", "SetParticleRoll", "SetParticleOpac", "GetParticleOpac", "GetParticleFade", "SetParticleFade", "GetParticleDur", "SetParticleDur", "SetParticlePower", "GetParticlePower", " SetParticleType ", " GetParticleType "],
     vec: ["Vector", "VectorBetween", "GetVectorComp", "SetVectorComp", "GetVectorLength", "SetVectorLength", "MultiplyVector", "AddVectors", "SubtractVectors", "AlignVector", "RotateAroundAxis", "RotateAroundVec", "ReflectVector", "CrossProduct", "DotProduct", "DirectionName", "RotationVector", "RandomVector", "SwapVectorComp", "ClampVector"],
-    pot: ["GetPotionType", "SetPotionType", "GetPotionAmp", "SetPotionAmp", "GetPotionDur", "SetPotionDur"],
-    snd: ["GetSoundType", "SetSoundType", "GetSoundVariant", "SetSoundVariant", "GetCustomSound", "SetCustomSound", "GetSoundPitch", "SetSoundPitch", "GetSoundVolume", "SetSoundVolume"],
+    pot: ["GetPotionType", "SetPotionType", "GetPotionAmp", "SetPotionAmp", "GetPotionDur", "SetPotionDur", " SetPotionType ", " GetPotionType "],
+    snd: ["GetSoundType", "SetSoundType", "GetSoundVariant", "SetSoundVariant", "GetCustomSound", "SetCustomSound", "GetSoundPitch", "SetSoundPitch", "GetSoundVolume", "SetSoundVolume", " SetSoundType ", " GetSoundType "],
 }
 
 //controls which if var actions go into which domains
@@ -46,6 +47,7 @@ export const TYPE_DOMAIN_ACTIONS = {
 export const TYPE_DOMAIN_CONDITIONS = {
     var: ["=", "!=", " InRange ", "VarExists", "VarIsType", "ValueIsEmpty"],
     game: [],
+    bvar: [],
     num: [">=", ">", "<=", "<"],
     str: ["StringMatches", "Contains", "StartsWith", "EndsWith", "IsFiltered"],
     txt: [],
@@ -63,6 +65,19 @@ export const TYPE_DOMAIN_CONDITIONS = {
 // covers both actions, if conditions and game values
 export const FORCED_EVENT_ACTIONS = ["AttackIsCrit","EventChunkNew","CmdArgEquals","CommandEquals"];
 
+// keys are actions which should be hidden from autocomplete but still usable
+// values are the deprecation message
+export const DEPRECATED_ACTIONS = {
+    // actions that work on names instead of ids/keys
+    "GetParticleType":  "This may not work with the newest particle types and could break at any time.\n\nUse `par.getId()` instead.",
+    "SetParticleType":  "This may not work with the newest particle types and could break at any time.\n\nUse `par.setId()` instead.",
+    "GetSoundType":     "This may not work with the newest sounds and could break at any time.\n\nUse `snd.getId()` instead.",
+    "SetSoundType":     "This may not work with the newest sounds and could break at any time.\n\nUse `snd.setId()` instead.",
+    "GetPotionType":    "This may not work with the newest potion effects and could break at any time.\n\nUse `pot.getId()` instead.",
+    "SetPotionType":    "This may not work with the newest potion effects and could break at any time.\n\nUse `pot.setId()` instead.",
+    "GetCustomSound":   "This is no longer supported by DiamondFire and could break at any time.\n\nUse `snd.getId()` instead.",
+    "SetCustomSound":   "This is no longer supported by DiamondFire and could break at any time.\n\nUse `snd.setId()` instead.",
+};
 
 //controls which select actions go with the select/filter keywords
 //! IF A SELECTION ACTION ISN'T PRESENT IN THESE TABLES IT WON'T BE ACCESSIBLE AT ALL !
@@ -106,6 +121,8 @@ export const PARTICLE_FIELD_DEFAULTS = {
     opacity: new NumberValue("100"),
     power: new NumberValue("1"),
     duration: new NumberValue("20"),
+    waterBlocks: new NumberValue("2"),
+    burstImpulse: new NumberValue("1.5"),
 }
 
 /** only includes stuff that goes on the second-level data object */
@@ -122,16 +139,18 @@ export const DF_PAR_FIELD_TO_TC: {[dfName: string]: string} = {
     "Opacity": "opacity",
     "Power": "power",
     "Duration": "duration",
+    "Water Blocks": "waterBlocks",
+    "Burst Impulse": "burstImpulse",
 }
 
 /** whether or not a particle's material field uses block ids or item ids */
 export const PAR_MATERIAL_FIELD_TYPES = {
-    "Item": VALID_ITEM_IDS,
-    "Dust Pillar": VALID_BLOCK_IDS,
-    "Falling Dust": VALID_BLOCK_IDS,
-    "Block Marker": VALID_BLOCK_IDS,
-    "Block": VALID_BLOCK_IDS,
-    "Block Crumble": VALID_BLOCK_IDS,
+    "item": VALID_ITEM_IDS,
+    "dust_pillar": VALID_BLOCK_IDS,
+    "falling_dust": VALID_BLOCK_IDS,
+    "block_marker": VALID_BLOCK_IDS,
+    "block": VALID_BLOCK_IDS,
+    "block_crumble": VALID_BLOCK_IDS,
 }
 
 export const TYPE_DESCRIPTIONS = {

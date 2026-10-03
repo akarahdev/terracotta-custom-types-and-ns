@@ -1370,3 +1370,72 @@ Deno.test("partial nested defaults and chained dynamic namespace access compose 
     "nested namespace function did not resolve its ancestor member unqualified",
   );
 });
+
+Deno.test("merged assignment lowering supports casts, namespace members, and bucket variables", () => {
+  const result = compileScripts([`
+        namespace counters {
+            count: num = 0;
+        }
+
+        import counters;
+        playerevent join {
+            line count: any = 0;
+            count as num = 1;
+            counters.count as num += 2;
+            bvar("data", "coins") as num = 3;
+        }
+    `]);
+  const hardErrors = result.errors.filter((error) => !error.isWarning);
+  assert(
+    hardErrors.length == 0,
+    hardErrors.map((error) => error.message).join("\n"),
+  );
+  const join =
+    result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
+  const assignments = join.code.flat().filter((block): block is ActionBlock =>
+    block instanceof ActionBlock && block.action == "="
+  );
+  assert(
+    assignments.some((block) =>
+      block.args[0] instanceof VariableValue &&
+      renderedVariableName(block.args[0]) ==
+        getSourceNamespaceMemberBackendName(["counters"], "count")
+    ),
+    "cast namespace assignment should update its backing variable",
+  );
+  assert(
+    assignments.some((block) =>
+      block.args[0]?.templateForm().id == "bucket_var"
+    ),
+    "cast bucket assignment should update a bucket variable",
+  );
+});
+
+Deno.test("cast namespace member containers retain their type through assignment paths", () => {
+  const result = compileScripts([`
+        namespace state {
+            data: any = {};
+        }
+
+        import state;
+        playerevent join {
+            (state.data as dict)["count"] = 4;
+        }
+    `]);
+  const hardErrors = result.errors.filter((error) => !error.isWarning);
+  assert(
+    hardErrors.length == 0,
+    hardErrors.map((error) => error.message).join("\n"),
+  );
+  const join =
+    result.compiler.codeLines.get(DFCodeblockName.PLAYER_EVENT)!.Join;
+  assert(
+    join.code.flat().some((block) =>
+      block instanceof ActionBlock && block.action == "SetDictValue" &&
+      block.args[0] instanceof VariableValue &&
+      renderedVariableName(block.args[0]) ==
+        getSourceNamespaceMemberBackendName(["state"], "data")
+    ),
+    "cast namespace container write should use the backing dictionary",
+  );
+});

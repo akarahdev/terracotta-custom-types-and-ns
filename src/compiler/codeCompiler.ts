@@ -77,6 +77,7 @@ import {
   VariableExpression,
 } from "../ast/expression.ts";
 import {
+  BucketVariableValue,
   CodeValue,
   EmptyValue,
   FunctionValue,
@@ -1243,6 +1244,53 @@ export class CodeCompiler {
     mode: "member" | "property",
   ) {
     if (mode == "member" && accessor instanceof CodeValue) {
+      if (accessee instanceof MultiValue) {
+        if (
+          !(accessor instanceof NumberValue && accessor.isCompileTimeConstant())
+        ) {
+          this.reportError(
+            expression.propertyName,
+            `Multi-value return types must be indexed with a compile-time constant number.`,
+            accessor,
+          );
+          return false;
+        }
+        let n = (accessor as NumberValue).toNumber();
+        if (isNaN(n)) {
+          this.reportError(
+            expression.propertyName,
+            "Index must be a valid number",
+          );
+          return false;
+        }
+        if (n <= 0) {
+          this.reportError(
+            expression.propertyName,
+            "Index must be greater than 0",
+          );
+        }
+        if (n > accessee.values.length) {
+          if (accessee.overflowType.matches(Type.void)) {
+            this.reportError(
+              expression.propertyName,
+              `Index cannot be greater than the number of values (${accessee.values.length})`,
+            );
+          } else if (accessee.values.length == 0) {
+            this.reportError(
+              expression.propertyName,
+              `Return types with an unknown number of values cannot be indexed into`,
+            );
+          } else {
+            this.reportError(
+              expression.propertyName,
+              `When indexing into a return type with multiple values, only values which are guaranteed to exist can be accessed.`,
+            );
+          }
+          return false;
+        }
+        return true;
+      }
+
       if (!(accessor instanceof TangibleValue)) {
         this.reportError(
           expression.propertyName,
@@ -1357,6 +1405,11 @@ export class CodeCompiler {
   ): [CodeValue, CodeBlock[]] {
     let code: CodeBlock[] = [];
     if (mode == "member" && accessor instanceof TangibleValue) {
+      // multivalue indexing
+      if (accessee instanceof MultiValue) {
+        return [accessee.values[(accessor as NumberValue).toNumber() - 1], []];
+      }
+
       let tvp = context.perSelectedMode
         ? this.perSelectedTempVarProvider
         : this.tempVarProvider;
@@ -1979,7 +2032,9 @@ export class CodeCompiler {
             }
             return [new MissingValue(e), []];
           } else if (parsed.length == 1 && parsed[0] instanceof SegmentPCode) {
-            return [new StringValue(e.value), []];
+            return [new StringValue(e.value, e), []];
+          } else if (parsed.length == 0) {
+            return [new StringValue("", e), []];
           } else {
             return [new StringValue(parsed, e), []];
           }
@@ -2482,8 +2537,9 @@ export class CodeCompiler {
 
         // generate path
         let baseExpression: Expression | undefined;
+        let baseExpressionTypeOverride: Type | undefined;
         let path: {
-          accesseeType: Type;
+          resultTypeOverride?: Type;
           accessMode: "property" | "member";
           accessor: TangibleValue | string;
           expr: AccessExpression | BracketedAccessExpression;
@@ -2492,9 +2548,12 @@ export class CodeCompiler {
         const generatePath = (expr: Expression, typeOverride?: Type) => {
           expr = expr.getRealExpression();
           if (expr instanceof TypecastExpression) {
+            // carrying the existing type override forward here is intentional
+            // for example, `anything as any as num` should ignore any type
+            // overrides deeper than `as num`
             generatePath(
               expr.left,
-              this.env.types.evaluateExplicitType(expr.type),
+              typeOverride ?? this.env.types.evaluateExplicitType(expr.type),
             );
           } else if (expr instanceof BracketedAccessExpression) {
             let [accessor, keyCode] = this.compileExpression(
@@ -2504,8 +2563,7 @@ export class CodeCompiler {
             if (!(accessor instanceof TangibleValue)) return;
             code.push(...keyCode);
             path.unshift({
-              accesseeType: typeOverride ??
-                this.env.types.evaluateExpression(expr.accessee),
+              resultTypeOverride: typeOverride,
               accessMode: "member",
               accessor,
               expr,
@@ -2513,8 +2571,7 @@ export class CodeCompiler {
             generatePath(expr.accessee);
           } else if (expr instanceof AccessExpression) {
             path.unshift({
-              accesseeType: typeOverride ??
-                this.env.types.evaluateExpression(expr.accessee),
+              resultTypeOverride: typeOverride,
               accessMode: "property",
               accessor: expr.propertyName.value,
               expr,
@@ -2522,6 +2579,7 @@ export class CodeCompiler {
             generatePath(expr.accessee);
           } else {
             baseExpression = expr;
+            baseExpressionTypeOverride = typeOverride;
           }
         };
         generatePath(assigneeExpr);
@@ -2561,6 +2619,11 @@ export class CodeCompiler {
                 segment.accessMode,
                 exprContext,
               );
+              // Preserve upstream's cast handling when consuming a
+              // compile-time namespace segment from the assignment path.
+              if (segment.resultTypeOverride) {
+                child.getType = () => segment.resultTypeOverride!;
+              }
               code.push(...getterCode);
               // The resulting value replaces the namespace
               // segment in the assignment path. This leaves the
@@ -2613,6 +2676,11 @@ export class CodeCompiler {
               );
               return;
             }
+            // apply any typecasting that got swallowed up in path generation
+            if (path[pathIndex]?.resultTypeOverride) {
+              child.getType = () => path[pathIndex].resultTypeOverride!;
+            }
+
             code.push(...getterCode);
             walkPath(child, pathIndex + 1);
             if (child instanceof TangibleValue) {
@@ -2669,6 +2737,11 @@ export class CodeCompiler {
                   );
                   return;
                 }
+                // apply any typecasting that got swallowed up in path generation
+                if (path[pathIndex]?.resultTypeOverride) {
+                  child.getType = () => path[pathIndex].resultTypeOverride!;
+                }
+
                 code.push(...getterCode);
                 incrementBase = child;
               }
@@ -2710,13 +2783,26 @@ export class CodeCompiler {
 
             // if this is setting a variable without a path, set directly
             if (path.length == 0) {
+              let exprToCheck = assigneeExpr.getRealExpression();
+              while (
+                exprToCheck instanceof TypecastExpression ||
+                exprToCheck instanceof GroupExpression
+              ) {
+                if (exprToCheck instanceof GroupExpression) {
+                  exprToCheck = exprToCheck.getRealExpression();
+                }
+                if (exprToCheck instanceof TypecastExpression) {
+                  exprToCheck = exprToCheck.left;
+                }
+              }
               if (
                 !(
-                  (assigneeExpr instanceof VariableExpression) ||
-                  (assigneeExpr instanceof AtomicExpression &&
+                  (exprToCheck instanceof VariableExpression) ||
+                  (exprToCheck instanceof AtomicExpression &&
                     currentAccessee instanceof VariableValue) ||
                   (consumedCompileTimeNamespacePath &&
-                    currentAccessee instanceof VariableValue)
+                    currentAccessee instanceof VariableValue) ||
+                  currentAccessee instanceof BucketVariableValue
                 )
               ) {
                 this.reportError(
@@ -2786,6 +2872,9 @@ export class CodeCompiler {
           baseExpression,
           exprContext,
         );
+        if (baseExpressionTypeOverride) {
+          baseValue.getType = () => baseExpressionTypeOverride!;
+        }
         code.push(...baseCode);
         walkPath(baseValue, 0);
       }

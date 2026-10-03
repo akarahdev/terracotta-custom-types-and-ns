@@ -88,6 +88,18 @@ export function tcParseNumber(val: string): number {
     return parseFloat(val);
 }
 
+/**
+ * Returns true if the stringified number passed in is a compile
+ * time constant with greater than 3 decimal points of precision
+ */
+export function numberIsHighPrecision(numberValue: string | PCode[]): boolean {
+    if (Array.isArray(numberValue)) return false;
+    let parsed = tcParseNumber(numberValue);
+    if (isNaN(parsed)) return false;
+    let matchResult = numberValue.match(/\.(?:[0_]*\d){3}[0_]*([^0_])/)?.[1]?.length;
+    return matchResult != undefined && matchResult > 0;
+}
+
 /** 
  * stands for 'plural s' (i think)
  * @returns '' if count == 1, else returns 's' 
@@ -164,7 +176,7 @@ export function getTagsAndArgTypes(args: Expression[], types: TypeProcessor, met
         ) {
             tagConstants[arg.left.token.value] = arg.right.token.value;
         } else {
-            argTypes.push(types.evaluateExpression(arg, types.getNodeFrame(arg)));
+            argTypes.push(types.evaluateExpression(arg));
         }
     }
 
@@ -187,12 +199,6 @@ export function integerizeHexColor(color: string): number | string {
     }
     
     return int
-}
-
-
-export function parseTcNumber(tcNum: string): number {
-    // todo: make this actually good
-    return parseFloat(tcNum);
 }
 
 /** 

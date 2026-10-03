@@ -15,7 +15,7 @@ import {
   VariableId,
   VariableScope,
 } from "../typeProcessor/typeProcessor.ts";
-import { parseTcNumber } from "../util/utils.ts";
+import { tcParseNumber } from "../util/utils.ts";
 import * as NBT from "nbtify";
 import {
   FunctionCallExtraInfo,
@@ -190,7 +190,7 @@ export class NumberValue extends TangibleValue {
    */
   toNumber(): number {
     if (typeof this.value == "string") {
-      return parseTcNumber(this.value);
+      return tcParseNumber(this.value);
     } else {
       throw new Error(`Cannot get numeric value of '${this.value}'`);
     }
@@ -204,6 +204,7 @@ export class NumberValue extends TangibleValue {
           ? this.value
           : this.value.join(""),
       },
+      "version": AD.VERSIONS.num,
     };
   }
 
@@ -234,6 +235,7 @@ export class StringValue extends TangibleValue {
       "data": {
         "name": this.toString(),
       },
+      "version": AD.VERSIONS.txt,
     };
   }
 
@@ -264,6 +266,7 @@ export class StyledTextValue extends TangibleValue {
       "data": {
         "name": this.value,
       },
+      "version": AD.VERSIONS.comp,
     };
   }
 
@@ -294,6 +297,7 @@ export class VectorValue extends TangibleValue {
         "y": this.y,
         "z": this.z,
       },
+      "version": AD.VERSIONS.vec,
     };
   }
 
@@ -331,6 +335,7 @@ export class LocationValue extends TangibleValue {
           "yaw": this.yaw,
         },
       },
+      "version": AD.VERSIONS.loc,
     };
   }
 
@@ -364,7 +369,9 @@ export class SoundValue extends TangibleValue {
         "sound": this.isCustom ? undefined : this.sound,
         "variant": this.variant,
         "key": this.isCustom ? this.sound : undefined,
+        "mappingVersion": AD.VERSIONS.sound_mapping,
       },
+      "version": AD.isSoundIdLegacy(this.sound) ? 0 : AD.VERSIONS.snd,
     };
   }
 }
@@ -392,7 +399,9 @@ export class PotionValue extends TangibleValue {
         "pot": this.effect,
         "dur": this.duration,
         "amp": this.level - 1,
+        "mappingVersion": AD.VERSIONS.potion_mapping,
       },
+      "version": AD.isPotionIdLegacy(this.effect) ? 0 : AD.VERSIONS.pot,
     };
   }
 }
@@ -415,6 +424,8 @@ export interface ParticleExtraData {
   opacity?: number;
   power?: number;
   time?: number;
+  waterBlocks?: number;
+  burstImpulse?: number;
 }
 export class ParticleValue extends TangibleValue {
   constructor(
@@ -443,7 +454,9 @@ export class ParticleValue extends TangibleValue {
           "vertical": this.spreadVertical,
         },
         "data": this.data,
+        "mappingVersion": AD.VERSIONS.particle_mapping,
       },
+      "version": AD.isParticleIdLegacy(this.particle) ? 0 : AD.VERSIONS.part,
     };
   }
 }
@@ -473,6 +486,7 @@ export class ItemValue extends TangibleValue {
             this.nbt ?? "{}"
           }}`,
       },
+      "version": AD.VERSIONS.item,
     };
   }
 }
@@ -504,6 +518,7 @@ export class LibraryItemValue extends TangibleValue {
       "data": {
         "item": NBT.stringify(tag),
       },
+      "version": AD.VERSIONS.item,
     };
   }
 }
@@ -565,6 +580,7 @@ export class VariableValue extends TangibleValue {
         "name": typeof this.name == "string" ? this.name : this.name.join(""),
         "scope": scope,
       },
+      "version": AD.VERSIONS.var,
     };
   }
 
@@ -576,6 +592,43 @@ export class VariableValue extends TangibleValue {
     return `var${
       this.explicitType ? `<${this.explicitType.name}>` : ""
     }(${this.scope}, '${this.name}')`;
+  }
+}
+
+export class BucketVariableValue extends TangibleValue {
+  constructor(
+    public bucket: string,
+    public name: string,
+    /** leave undefined to use default namespace */
+    public namespaceAlias?: string,
+    astNode?: ASTNode,
+  ) {
+    super(astNode);
+  }
+
+  getType(typeProcessor: TypeProcessor): Type {
+    return Type.any;
+  }
+
+  templateForm() {
+    return {
+      "id": "bucket_var",
+      "data": {
+        "name": this.name,
+        "key": this.bucket,
+        "namespace_type": this.namespaceAlias != undefined
+          ? "ALIAS"
+          : "DEFAULT",
+        "namespace_alias": this.namespaceAlias != undefined
+          ? this.namespaceAlias
+          : "",
+      },
+      "version": AD.VERSIONS.bucket_var,
+    };
+  }
+
+  isCompileTimeConstant() {
+    return false;
   }
 }
 
@@ -602,6 +655,7 @@ export class GameValueValue extends TangibleValue {
         "type": this.value,
         "target": this.target,
       },
+      "version": AD.VERSIONS.g_val,
     };
   }
 
@@ -638,6 +692,7 @@ export class ParameterValue extends TangibleValue {
         "plural": this.plural,
         "optional": this.optional,
       },
+      "version": AD.VERSIONS.pn_el,
     };
   }
 }
@@ -667,6 +722,7 @@ export class ActionTagValue extends TangibleValue {
           "action": this.definition.action,
           "variable": this.variable?.templateForm(),
         },
+        "version": AD.VERSIONS.bl_tag,
       },
       "slot": this.definition.chestSlot,
     };

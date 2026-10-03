@@ -1,5 +1,7 @@
 /.DS_Store
+/.vscode
 /brainstorming
 todo.txt
 /node_modules
 **/.DS_Store
+*.js
